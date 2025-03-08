@@ -73,7 +73,7 @@ uint64_t simd_search(const char *text, size_t text_len,
 void* search_thread(void *arg);
 int search_file(const char *filename, const char *pattern, bool case_sensitive,
                bool count_only, int thread_count);
-int search_string(const char *text, const char *pattern, bool case_sensitive);
+int search_string(const char *pattern, const char *text, bool case_sensitive);
 
 /**
  * Get current time with high precision for performance measurement
@@ -295,12 +295,12 @@ void* search_thread(void *arg) {
 /**
  * Search function for direct string input
  *
- * @param text The text to search in
  * @param pattern The pattern to search for
+ * @param text The text to search in
  * @param case_sensitive Whether the search is case-sensitive
  * @return 0 on success, error code on failure
  */
-int search_string(const char *text, const char *pattern, bool case_sensitive) {
+int search_string(const char *pattern, const char *text, bool case_sensitive) {
     double start_time = get_time();
     size_t text_len = strlen(text);
     size_t pattern_len = strlen(pattern);
@@ -505,13 +505,13 @@ void print_usage(const char *program_name) {
     printf("  -i            Case-insensitive search\n");
     printf("  -c            Count matches only (don't print matching lines)\n");
     printf("  -t NUM        Use NUM threads (default: %d)\n", DEFAULT_THREAD_COUNT);
-    printf("  -s STRING     Search within STRING instead of a file\n");
+    printf("  -s            Search within a string instead of a file\n");
     printf("  -v            Display version information\n");
     printf("  -h            Display this help message\n\n");
     printf("EXAMPLES:\n");
     printf("  %s \"search term\" file.txt         Search for \"search term\" in file.txt\n", program_name);
     printf("  %s -i -t 8 \"ERROR\" logfile.log    Case-insensitive search with 8 threads\n", program_name);
-    printf("  %s -s \"Hello world\" \"Hello\"       Search for \"Hello\" in the string \"Hello world\"\n\n", program_name);
+    printf("  %s -s \"Hello\" \"Hello world\"       Search for \"Hello\" in the string \"Hello world\"\n\n", program_name);
 }
 
 /**
@@ -523,11 +523,12 @@ int main(int argc, char *argv[]) {
     char *input_string = NULL;
     bool case_sensitive = true;
     bool count_only = false;
+    bool string_mode = false;
     int thread_count = DEFAULT_THREAD_COUNT;
     int opt;
 
     // Parse command line arguments
-    while ((opt = getopt(argc, argv, "icvt:s:h")) != -1) {
+    while ((opt = getopt(argc, argv, "icvt:sh")) != -1) {
         switch (opt) {
             case 'i':
                 case_sensitive = false;
@@ -545,7 +546,7 @@ int main(int argc, char *argv[]) {
                 }
                 break;
             case 's':
-                input_string = optarg;
+                string_mode = true;
                 break;
             case 'v':
                 printf("krep v%s\n", VERSION);
@@ -566,24 +567,9 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    pattern = argv[optind];
-    
-    // Check if we're working with a string or file
-    if (input_string) {
-        // String search mode
-        return search_string(input_string, pattern, case_sensitive);
-    } else {
-        // File search mode - check if we have a filename
-        if (optind + 1 >= argc) {
-            fprintf(stderr, "Error: Missing required file argument\n");
-            print_usage(argv[0]);
-            return 1;
-        }
-        
-        filename = argv[optind + 1];
-    }
-
+    pattern = argv[optind++];
     size_t pattern_len = strlen(pattern);
+
     if (pattern_len == 0) {
         fprintf(stderr, "Error: Pattern cannot be empty\n");
         return 1;
@@ -594,10 +580,26 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    // Perform the search based on the mode
-    if (input_string) {
-        return search_string(input_string, pattern, case_sensitive);
+    // Check if we're working with a string or file
+    if (string_mode) {
+        // String search mode - need another argument for the string to search in
+        if (optind >= argc) {
+            fprintf(stderr, "Error: Missing required text argument\n");
+            print_usage(argv[0]);
+            return 1;
+        }
+
+        input_string = argv[optind];
+        return search_string(pattern, input_string, case_sensitive);
     } else {
+        // File search mode - check if we have a filename
+        if (optind >= argc) {
+            fprintf(stderr, "Error: Missing required file argument\n");
+            print_usage(argv[0]);
+            return 1;
+        }
+
+        filename = argv[optind];
         return search_file(filename, pattern, case_sensitive, count_only, thread_count);
     }
 }
