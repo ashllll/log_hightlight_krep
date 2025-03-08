@@ -63,7 +63,7 @@ krep -c "TODO" *.c
 
 Search within a string instead of a file:
 ```bash
-krep -s "Hello world" "Hello"
+krep -s "Hello" "Hello world"
 ```
 
 ## Command Line Options
