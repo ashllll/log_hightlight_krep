@@ -471,7 +471,7 @@ int search_string(const char *pattern, const char *text, bool case_sensitive) {
  * Search within a file with adaptive threading
  */
 int search_file(const char *filename, const char *pattern, bool case_sensitive,
-               bool count_only, int thread_count) {
+                bool count_only, int thread_count) {
     double start_time = get_time();
     size_t pattern_len = strlen(pattern);
     uint64_t match_count = 0;
@@ -496,7 +496,12 @@ int search_file(const char *filename, const char *pattern, bool case_sensitive,
         return 0;
     }
 
-    char *file_data = mmap(NULL, file_size, PROT_READ, MAP_PRIVATE | MAP_POPULATE, fd, 0);
+    // Set mmap flags conditionally to handle systems without MAP_POPULATE
+    int flags = MAP_PRIVATE;
+#ifdef MAP_POPULATE
+    flags |= MAP_POPULATE;
+#endif
+    char *file_data = mmap(NULL, file_size, PROT_READ, flags, fd, 0);
     if (file_data == MAP_FAILED) {
         fprintf(stderr, "Error memory-mapping file: %s\n", strerror(errno));
         close(fd);
@@ -569,19 +574,22 @@ int search_file(const char *filename, const char *pattern, bool case_sensitive,
     double search_time = end_time - start_time;
     double mb_per_sec = file_size / (1024.0 * 1024.0) / search_time;
 
+    // Output controlled by count_only parameter
     printf("Found %" PRIu64 " matches\n", match_count);
-    printf("Search completed in %.4f seconds (%.2f MB/s)\n", search_time, mb_per_sec);
-    printf("Search details:\n");
-    printf("  - File size: %.2f MB\n", file_size / (1024.0 * 1024.0));
-    printf("  - Pattern length: %zu characters\n", pattern_len);
+    if (!count_only) {
+        printf("Search completed in %.4f seconds (%.2f MB/s)\n", search_time, mb_per_sec);
+        printf("Search details:\n");
+        printf("  - File size: %.2f MB\n", file_size / (1024.0 * 1024.0));
+        printf("  - Pattern length: %zu characters\n", pattern_len);
 #ifdef __AVX2__
-    printf("  - Using AVX2 acceleration\n");
+        printf("  - Using AVX2 acceleration\n");
 #elif defined(__SSE4_2__)
-    printf("  - Using SSE4.2 acceleration\n");
+        printf("  - Using SSE4.2 acceleration\n");
 #else
-    printf("  - Using Boyer-Moore-Horspool algorithm\n");
+        printf("  - Using Boyer-Moore-Horspool algorithm\n");
 #endif
-    printf("  - %s search\n", case_sensitive ? "Case-sensitive" : "Case-insensitive");
+        printf("  - %s search\n", case_sensitive ? "Case-sensitive" : "Case-insensitive");
+    }
 
     munmap(file_data, file_size);
     close(fd);
