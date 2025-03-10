@@ -5,6 +5,12 @@
 
 `krep` is a blazingly fast string search utility designed for performance-critical applications. It implements multiple optimized search algorithms and leverages modern hardware capabilities to deliver maximum throughput.
 
+## Blog Post
+
+Building a High-Performance String Search Utility
+
+https://dev.to/daviducolo/introducing-krep-building-a-high-performance-string-search-utility-2pdo
+
 ## Features
 
 - **Multiple optimized search algorithms**
