@@ -1,7 +1,7 @@
 /* krep - A high-performance string search utility
  *
  * Author: Davide Santangelo
- * Version: 0.1.1
+ * Version: 0.1.2
  * Year: 2025
  *
  * Features:
@@ -173,7 +173,7 @@ uint64_t boyer_moore_search(const char *text, size_t text_len,
         }
         if (match) {
             match_count++;
-            i += pattern_len; // changed: skip entire pattern on match
+            i++; // Changed: increment by 1 instead of pattern_len to catch all matches
         } else {
             unsigned char bad_char = text[i];
             if (!case_sensitive) bad_char = tolower(bad_char);
@@ -254,9 +254,7 @@ uint64_t kmp_search(const char *text, size_t text_len,
 
         if (j == pattern_len) {
             match_count++;
-            // Jump ahead by one character (for single-char patterns) or full pattern
-            // to avoid overlapping
-            i = i - j + (pattern_len > 1 ? pattern_len : 1);
+            i = i - j + 1;
             j = 0;
         }
     }
@@ -357,7 +355,7 @@ uint64_t simd_search(const char *text, size_t text_len,
             int um = _mm_cmpestri(up, pattern_len, lt, pattern_len, _SIDD_CMP_EQUAL_ORDERED);
             if (lm == 0 || um == 0) {
                 match_count++;
-                i += pattern_len; // Skip ahead to avoid overlapping matches
+                i++;
             } else {
                 i++;
             }
@@ -430,7 +428,7 @@ uint64_t avx2_search(const char *text, size_t text_len,
         
         if (match) {
             match_count++;
-            i += pattern_len; // Skip ahead to avoid overlapping matches
+            i++; // Changed: increment by 1 instead of pattern_len to catch all matches
         } else {
             i++;
         }
