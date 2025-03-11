@@ -113,6 +113,39 @@ Performance compared to standard tools (searching a 1GB text file for a common p
 
 3. **Memory efficiency**: Uses memory-mapped I/O to leverage the operating system's page cache
 
+## Testing
+
+krep includes a comprehensive test suite to validate its functionality. To run the tests:
+
+```bash
+# From the project root directory
+make test
+```
+
+This will compile and execute the test suite, which verifies:
+- Basic search functionality for all algorithms
+- Edge cases (empty strings, single characters)
+- Case sensitivity handling
+- Repeated pattern handling
+- Performance benchmarks
+
+### Example test output:
+
+```
+Running krep tests...
+
+=== Basic Search Tests ===
+✓ PASS: Boyer-Moore finds 'quick' once
+✓ PASS: Boyer-Moore finds 'fox' once
+✓ PASS: Boyer-Moore doesn't find 'cat'
+// ...more test results...
+
+=== Test Summary ===
+Tests passed: 23
+Tests failed: 0
+Total tests: 23
+```
+
 ## The Story Behind the Name
 
 The name "krep" has an interesting origin. It is inspired by the Icelandic word "kreppan," which means "to grasp quickly" or "to catch firmly." I came across this word while researching efficient techniques for pattern recognition.

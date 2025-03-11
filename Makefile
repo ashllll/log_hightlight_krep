@@ -19,6 +19,11 @@ SRC = krep.c
 OBJ = $(SRC:.c=.o)
 EXEC = krep
 
+# Test files
+TEST_SRC = test/test_krep.c
+TEST_OBJ = $(TEST_SRC:.c=.o)
+TEST_EXEC = test_krep
+
 all: $(EXEC)
 
 $(EXEC): $(OBJ)
@@ -27,8 +32,18 @@ $(EXEC): $(OBJ)
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
+# Test target
+test: $(TEST_EXEC)
+	./$(TEST_EXEC)
+
+$(TEST_EXEC): $(TEST_OBJ) krep_test.o
+	$(CC) $(CFLAGS) -o $(TEST_EXEC) $(TEST_OBJ) krep_test.o $(LDFLAGS)
+
+krep_test.o: $(SRC)
+	$(CC) $(CFLAGS) -DTESTING -c $(SRC) -o krep_test.o
+
 clean:
-	rm -f $(OBJ) $(EXEC)
+	rm -f $(OBJ) $(EXEC) $(TEST_OBJ) $(TEST_EXEC)
 
 install: $(EXEC)
 	install -m 755 $(EXEC) /usr/local/bin/
@@ -36,4 +51,4 @@ install: $(EXEC)
 uninstall:
 	rm -f /usr/local/bin/$(EXEC)
 
-.PHONY: all clean install uninstall
+.PHONY: all clean install uninstall test
