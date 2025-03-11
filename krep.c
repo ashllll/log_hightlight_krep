@@ -1,7 +1,7 @@
 /* krep - A high-performance string search utility
  *
  * Author: Davide Santangelo
- * Version: 0.1.2
+ * Version: 0.1.3
  * Year: 2025
  *
  * Features:
