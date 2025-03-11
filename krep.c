@@ -1,7 +1,7 @@
 /* krep - A high-performance string search utility
  *
  * Author: Davide Santangelo
- * Version: 0.1.0
+ * Version: 0.1.1
  * Year: 2025
  *
  * Features:
@@ -173,7 +173,7 @@ uint64_t boyer_moore_search(const char *text, size_t text_len,
         }
         if (match) {
             match_count++;
-            i++;
+            i += pattern_len; // changed: skip entire pattern on match
         } else {
             unsigned char bad_char = text[i];
             if (!case_sensitive) bad_char = tolower(bad_char);
@@ -196,6 +196,18 @@ uint64_t kmp_search(const char *text, size_t text_len,
     uint64_t match_count = 0;
     if (pattern_len == 0 || text_len < pattern_len) return 0;
 
+    // Special case for single character patterns
+    if (pattern_len == 1) {
+        char p = case_sensitive ? pattern[0] : tolower(pattern[0]);
+        for (size_t i = 0; i < text_len; i++) {
+            char t = case_sensitive ? text[i] : tolower(text[i]);
+            if (t == p) {
+                match_count++;
+            }
+        }
+        return match_count;
+    }
+
     int *prefix_table = malloc(pattern_len * sizeof(int));
     if (!prefix_table) {
         fprintf(stderr, "Error allocating prefix table\n");
@@ -217,20 +229,35 @@ uint64_t kmp_search(const char *text, size_t text_len,
         prefix_table[i] = j;
     }
 
-    // Search
+    // Modified non-overlapping search using while loop:
+    size_t i = 0;
     j = 0;
-    for (size_t i = 0; i < text_len; i++) {
-        while (j > 0 && (case_sensitive ? text[i] != pattern[j] :
-                         tolower(text[i]) != tolower(pattern[j]))) {
-            j = prefix_table[j - 1];
+    while (i < text_len) {
+        char text_char = text[i];
+        char pattern_char = pattern[j];
+
+        if (!case_sensitive) {
+            text_char = tolower(text_char);
+            pattern_char = tolower(pattern_char);
         }
-        if (case_sensitive ? text[i] == pattern[j] :
-            tolower(text[i]) == tolower(pattern[j])) {
+
+        if (text_char == pattern_char) {
+            i++;
             j++;
+        } else {
+            if (j > 0) {
+                j = prefix_table[j - 1];
+            } else {
+                i++;
+            }
         }
+
         if (j == pattern_len) {
             match_count++;
-            j = prefix_table[j - 1];
+            // Jump ahead by one character (for single-char patterns) or full pattern
+            // to avoid overlapping
+            i = i - j + (pattern_len > 1 ? pattern_len : 1);
+            j = 0;
         }
     }
     free(prefix_table);
@@ -261,7 +288,8 @@ uint64_t rabin_karp_search(const char *text, size_t text_len,
         text_hash = (base * text_hash + tc) % prime;
     }
 
-    for (size_t i = 0; i <= text_len - pattern_len; i++) {
+    size_t i = 0;
+    while (i <= text_len - pattern_len) {
         if (pattern_hash == text_hash) {
             bool match = true;
             for (size_t j = 0; j < pattern_len; j++) {
@@ -272,13 +300,25 @@ uint64_t rabin_karp_search(const char *text, size_t text_len,
                     break;
                 }
             }
-            if (match) match_count++;
+            if (match) {
+                match_count++;
+                i += pattern_len; // changed: skip entire pattern on match
+                if (i <= text_len - pattern_len) {
+                    text_hash = 0;
+                    for (size_t k = 0; k < pattern_len; k++) {
+                        char tc = case_sensitive ? text[i + k] : tolower(text[i + k]);
+                        text_hash = (base * text_hash + tc) % prime;
+                    }
+                }
+                continue;
+            }
         }
-        if (i < text_len - pattern_len) {
-            char out = case_sensitive ? text[i] : tolower(text[i]);
-            char in = case_sensitive ? text[i + pattern_len] : tolower(text[i + pattern_len]);
+        i++;
+        if (i <= text_len - pattern_len) {
+            char out = case_sensitive ? text[i - 1] : tolower(text[i - 1]);
+            char in = case_sensitive ? text[i + pattern_len - 1] : tolower(text[i + pattern_len - 1]);
             text_hash = (base * (text_hash - out * h) + in) % prime;
-            if (text_hash < 0) text_hash += prime;
+            if ((int)text_hash < 0) text_hash += prime;
         }
     }
     return match_count;
@@ -287,6 +327,7 @@ uint64_t rabin_karp_search(const char *text, size_t text_len,
 #ifdef __SSE4_2__
 /**
  * SIMD-accelerated search with SSE4.2
+ * Uses non-overlapping match approach (skips ahead by pattern length after a match)
  */
 uint64_t simd_search(const char *text, size_t text_len,
                     const char *pattern, size_t pattern_len,
@@ -298,6 +339,9 @@ uint64_t simd_search(const char *text, size_t text_len,
 
     if (!case_sensitive) {
         char lower_pattern[16], upper_pattern[16];
+        memset(lower_pattern, 0, sizeof(lower_pattern));
+        memset(upper_pattern, 0, sizeof(upper_pattern));
+        
         for (size_t i = 0; i < pattern_len; i++) {
             lower_pattern[i] = tolower(pattern[i]);
             upper_pattern[i] = toupper(pattern[i]);
@@ -305,19 +349,29 @@ uint64_t simd_search(const char *text, size_t text_len,
         __m128i lp = _mm_loadu_si128((__m128i*)lower_pattern);
         __m128i up = _mm_loadu_si128((__m128i*)upper_pattern);
 
-        for (size_t i = 0; i <= text_len - pattern_len; i++) {
+        size_t i = 0;
+        while (i <= text_len - pattern_len) {
             __m128i t = _mm_loadu_si128((__m128i*)(text + i));
             __m128i lt = _mm_or_si128(_mm_and_si128(t, _mm_set1_epi8(0xDF)), _mm_set1_epi8(0x20));
             int lm = _mm_cmpestri(lp, pattern_len, lt, pattern_len, _SIDD_CMP_EQUAL_ORDERED);
             int um = _mm_cmpestri(up, pattern_len, lt, pattern_len, _SIDD_CMP_EQUAL_ORDERED);
-            if (lm == 0 || um == 0) match_count++;
+            if (lm == 0 || um == 0) {
+                match_count++;
+                i += pattern_len; // Skip ahead to avoid overlapping matches
+            } else {
+                i++;
+            }
         }
     } else {
         __m128i p = _mm_loadu_si128((__m128i*)pattern);
-        for (size_t i = 0; i <= text_len - pattern_len; i++) {
+        size_t i = 0;
+        while (i <= text_len - pattern_len) {
             __m128i t = _mm_loadu_si128((__m128i*)(text + i));
             if (_mm_cmpestri(p, pattern_len, t, pattern_len, _SIDD_CMP_EQUAL_ORDERED) == 0) {
                 match_count++;
+                i += pattern_len; // Skip ahead to avoid overlapping matches
+            } else {
+                i++;
             }
         }
     }
@@ -328,6 +382,7 @@ uint64_t simd_search(const char *text, size_t text_len,
 #ifdef __AVX2__
 /**
  * AVX2-accelerated search with 256-bit registers
+ * Uses non-overlapping match approach (skips ahead by pattern length after a match)
  */
 uint64_t avx2_search(const char *text, size_t text_len,
                     const char *pattern, size_t pattern_len,
@@ -337,39 +392,50 @@ uint64_t avx2_search(const char *text, size_t text_len,
         return boyer_moore_search(text, text_len, pattern, pattern_len, case_sensitive);
     }
 
-    if (!case_sensitive) {
-        char lower_pattern[32], upper_pattern[32];
-        memset(lower_pattern, 0, 32);
-        memset(upper_pattern, 0, 32);
-        for (size_t i = 0; i < pattern_len; i++) {
+    // Prepare pattern vectors
+    char lower_pattern[32], upper_pattern[32];
+    memset(lower_pattern, 0, sizeof(lower_pattern));
+    memset(upper_pattern, 0, sizeof(upper_pattern));
+    
+    for (size_t i = 0; i < pattern_len; i++) {
+        if (case_sensitive) {
+            lower_pattern[i] = pattern[i];
+        } else {
             lower_pattern[i] = tolower(pattern[i]);
             upper_pattern[i] = toupper(pattern[i]);
         }
-        __m256i lp = _mm256_loadu_si256((__m256i*)lower_pattern);
-        __m256i up = _mm256_loadu_si256((__m256i*)upper_pattern);
-
-        for (size_t i = 0; i <= text_len - pattern_len; i += 32) {
-            __m256i t = _mm256_loadu_si256((__m256i*)(text + i));
-            __m256i lt = _mm256_or_si256(_mm256_and_si256(t, _mm256_set1_epi8(0xDF)), _mm256_set1_epi8(0x20));
-            __m256i lc = _mm256_cmpeq_epi8(lp, lt);
-            __m256i uc = _mm256_cmpeq_epi8(up, lt);
-            uint32_t mask = _mm256_movemask_epi8(_mm256_or_si256(lc, uc));
-            while (mask) {
-                match_count += (mask & 1);
-                mask >>= 1;
+    }
+    
+    // Scan through text, skipping by pattern_len after each match
+    size_t i = 0;
+    while (i <= text_len - pattern_len) {
+        bool match = true;
+        
+        // Use standard comparison for accurate non-overlapping matches
+        for (size_t j = 0; j < pattern_len; j++) {
+            char tc = text[i + j];
+            char pc;
+            
+            if (case_sensitive) {
+                pc = lower_pattern[j];
+                match = (tc == pc);
+            } else {
+                tc = tolower(tc);
+                pc = lower_pattern[j];
+                match = (tc == pc);
             }
+            
+            if (!match) break;
         }
-    } else {
-        __m256i p = _mm256_loadu_si256((__m256i*)pattern);
-        for (size_t i = 0; i <= text_len - pattern_len; i += 32) {
-            __m256i t = _mm256_loadu_si256((__m256i*)(text + i));
-            uint32_t mask = _mm256_movemask_epi8(_mm256_cmpeq_epi8(p, t));
-            while (mask) {
-                match_count += (mask & 1);
-                mask >>= 1;
-            }
+        
+        if (match) {
+            match_count++;
+            i += pattern_len; // Skip ahead to avoid overlapping matches
+        } else {
+            i++;
         }
     }
+    
     return match_count;
 }
 #endif
@@ -381,40 +447,79 @@ void* search_thread(void *arg) {
     search_job_t *job = (search_job_t *)arg;
     job->local_count = 0;
 
+    // Adjust boundaries to ensure proper non-overlapping matching
     size_t effective_end = job->end_pos;
     if (effective_end > job->start_pos + job->pattern_len) {
         effective_end -= (job->pattern_len - 1);
     } else {
         return NULL;
     }
+    
+    // Special handling for the first thread (no adjustment needed)
+    size_t start_pos = job->start_pos;
+    
+    // Skip potentially overlapping matches at thread boundaries (except first thread)
+    if (job->thread_id > 0) {
+        // Find the first position that won't create overlaps with previous thread
+        size_t max_adjust = job->pattern_len - 1;
+        for (size_t i = 0; i < max_adjust && (start_pos + i) < effective_end; i++) {
+            // Check if this would be the start of a match
+            bool potential_match = true;
+            for (size_t j = 0; j < job->pattern_len && (start_pos + i + j) < effective_end; j++) {
+                char text_char = job->file_data[start_pos + i + j];
+                char pattern_char = job->pattern[j];
+                
+                if (!job->case_sensitive) {
+                    text_char = tolower(text_char);
+                    pattern_char = tolower(pattern_char);
+                }
+                
+                if (text_char != pattern_char) {
+                    potential_match = false;
+                    break;
+                }
+            }
+            
+            if (potential_match) {
+                // Found a match at the boundary, skip ahead
+                start_pos += (i + job->pattern_len);
+                break;
+            }
+        }
+    }
+    
+    // If boundaries overlap completely, nothing to do
+    if (start_pos >= effective_end) {
+        return NULL;
+    }
 
     // Dynamic algorithm selection
     if (job->pattern_len < 3) {
-        job->local_count = kmp_search(job->file_data + job->start_pos,
-                                     effective_end - job->start_pos,
+        job->local_count = kmp_search(job->file_data + start_pos,
+                                     effective_end - start_pos,
                                      job->pattern, job->pattern_len,
                                      job->case_sensitive);
     } else if (job->pattern_len > 16) {
-        job->local_count = rabin_karp_search(job->file_data + job->start_pos,
-                                            effective_end - job->start_pos,
-                                            job->pattern, job->pattern_len,
-                                            job->case_sensitive);
+        job->local_count = rabin_karp_search(job->file_data + start_pos,
+                                           effective_end - start_pos,
+                                           job->pattern, job->pattern_len,
+                                           job->case_sensitive);
     } else {
 #ifdef __AVX2__
-        job->local_count = avx2_search(job->file_data + job->start_pos,
-                                      effective_end - job->start_pos,
-                                      job->pattern, job->pattern_len,
-                                      job->case_sensitive);
+        job->local_count = avx2_search(job->file_data + start_pos,
+                                     effective_end - start_pos,
+                                     job->pattern, job->pattern_len,
+                                     job->case_sensitive);
 #elif defined(__SSE4_2__)
-        job->local_count = simd_search(job->file_data + job->start_pos,
-                                      effective_end - job->start_pos,
-                                      job->pattern, job->pattern_len,
-                                      job->case_sensitive);
+        job->local_count = simd_search(job->file_data + start_pos,
+                                     effective_end - start_pos,
+                                     job->pattern, job->pattern_len,
+                                     job->case_sensitive);
 #else
-        job->local_count = boyer_moore_search(job->file_data + job->start_pos,
-                                             effective_end - job->start_pos,
-                                             job->pattern, job->pattern_len,
-                                             job->case_sensitive);
+        job->local_count = boyer_moore_search(job->file_data + start_pos,
+                                            effective_end - start_pos,
+                                            job->pattern, job->pattern_len,
+                                            job->case_sensitive);
 #endif
     }
     return NULL;
@@ -476,6 +581,11 @@ int search_file(const char *filename, const char *pattern, bool case_sensitive,
     size_t pattern_len = strlen(pattern);
     uint64_t match_count = 0;
 
+    if (pattern_len == 0) {
+        fprintf(stderr, "Error: Empty pattern\n");
+        return 1;
+    }
+
     int fd = open(filename, O_RDONLY);
     if (fd == -1) {
         fprintf(stderr, "Error opening file '%s': %s\n", filename, strerror(errno));
@@ -496,6 +606,13 @@ int search_file(const char *filename, const char *pattern, bool case_sensitive,
         return 0;
     }
 
+    // Add error handling for edge cases
+    if (pattern_len > file_size) {
+        printf("Pattern is longer than file, no matches possible\n");
+        close(fd);
+        return 0;
+    }
+
     // Set mmap flags conditionally to handle systems without MAP_POPULATE
     int flags = MAP_PRIVATE;
 #ifdef MAP_POPULATE
@@ -509,11 +626,18 @@ int search_file(const char *filename, const char *pattern, bool case_sensitive,
     }
     madvise(file_data, file_size, MADV_SEQUENTIAL);
 
-    // Adaptive threading threshold
+    // Adaptive threading threshold with better limits
     int cpu_cores = sysconf(_SC_NPROCESSORS_ONLN);
-    thread_count = (thread_count > cpu_cores) ? cpu_cores : thread_count;
-    size_t dynamic_threshold = MIN_FILE_SIZE_FOR_THREADS * cpu_cores;
+    if (cpu_cores <= 0) cpu_cores = 1;
+    
+    thread_count = (thread_count <= 0) ? 1 : 
+                   (thread_count > cpu_cores) ? cpu_cores : thread_count;
+                   
+    // Adjust threshold based on pattern length - longer patterns need more data per thread
+    size_t dynamic_threshold = MIN_FILE_SIZE_FOR_THREADS * cpu_cores * 
+                              (1 + (pattern_len > 64 ? 64 : pattern_len) / 16);
 
+    // Use single-threaded approach for small files or when specifically requested
     if (file_size < dynamic_threshold || thread_count <= 1) {
         if (pattern_len < 3) {
             match_count = kmp_search(file_data, file_size, pattern, pattern_len, case_sensitive);
@@ -540,17 +664,31 @@ int search_file(const char *filename, const char *pattern, bool case_sensitive,
             return 1;
         }
 
-        // Dynamic chunk sizing
+        // Use larger chunks for very large files to reduce thread overhead
         size_t chunk_size = file_size / thread_count;
-        chunk_size = (chunk_size < CHUNK_SIZE) ? CHUNK_SIZE : chunk_size;
+        if (file_size > (size_t)thread_count * CHUNK_SIZE * 4) {
+            chunk_size = (chunk_size < CHUNK_SIZE * 2) ? CHUNK_SIZE * 2 : chunk_size;
+        } else {
+            chunk_size = (chunk_size < CHUNK_SIZE) ? CHUNK_SIZE : chunk_size;
+        }
 
+        // Ensure chunk boundaries allow for proper overlap handling
         for (int i = 0; i < thread_count; i++) {
             jobs[i].file_data = file_data;
             jobs[i].start_pos = i * chunk_size;
-            jobs[i].end_pos = (i == thread_count - 1) ? file_size : (i + 1) * chunk_size;
-            if (jobs[i].end_pos + pattern_len - 1 <= file_size) {
-                jobs[i].end_pos += pattern_len - 1;
+            
+            // Handle the last chunk boundary
+            if (i == thread_count - 1) {
+                jobs[i].end_pos = file_size;
+            } else {
+                jobs[i].end_pos = (i + 1) * chunk_size;
+                
+                // Add overlap to ensure we don't miss matches at chunk boundaries
+                if (jobs[i].end_pos + pattern_len - 1 <= file_size) {
+                    jobs[i].end_pos += pattern_len - 1;
+                }
             }
+            
             jobs[i].pattern = pattern;
             jobs[i].pattern_len = pattern_len;
             jobs[i].case_sensitive = case_sensitive;
@@ -559,6 +697,16 @@ int search_file(const char *filename, const char *pattern, bool case_sensitive,
 
             if (pthread_create(&threads[i], NULL, search_thread, &jobs[i]) != 0) {
                 fprintf(stderr, "Error creating thread %d\n", i);
+                // Clean up already created threads
+                for (int j = 0; j < i; j++) {
+                    pthread_cancel(threads[j]);
+                    pthread_join(threads[j], NULL);
+                }
+                free(threads);
+                free(jobs);
+                munmap(file_data, file_size);
+                close(fd);
+                return 1;
             }
         }
 
@@ -645,9 +793,27 @@ int main(int argc, char *argv[]) {
     }
 
     pattern = argv[optind++];
-    if (strlen(pattern) > MAX_PATTERN_LENGTH) {
-        fprintf(stderr, "Error: Pattern too long\n");
+    if (strlen(pattern) == 0) {
+        fprintf(stderr, "Error: Empty pattern\n");
         return 1;
+    }
+    
+    if (strlen(pattern) > MAX_PATTERN_LENGTH) {
+        fprintf(stderr, "Error: Pattern too long (max %d characters)\n", MAX_PATTERN_LENGTH);
+        return 1;
+    }
+
+    // Debug output for command line arguments
+    if (optind < argc) {
+        // Clean up any stray quotes or commas in the pattern or input
+        char *p = pattern;
+        while (*p) {
+            if (*p == '\'' || *p == '"' || *p == ',') {
+                memmove(p, p+1, strlen(p));
+            } else {
+                p++;
+            }
+        }
     }
 
     if (string_mode) {
@@ -657,6 +823,17 @@ int main(int argc, char *argv[]) {
             return 1;
         }
         input_string = argv[optind];
+        
+        // Clean up any stray quotes or commas in the input string
+        char *p = input_string;
+        while (*p) {
+            if (*p == '\'' || *p == '"' || *p == ',') {
+                memmove(p, p+1, strlen(p));
+            } else {
+                p++;
+            }
+        }
+        
         return search_string(pattern, input_string, case_sensitive);
     } else {
         if (optind >= argc) {
