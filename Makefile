@@ -3,7 +3,7 @@
 # Version: 0.1.0
 
 CC = gcc
-CFLAGS = -Wall -Wextra -O3 -std=c11 -pthread
+CFLAGS = -Wall -Wextra -O3 -std=c11 -pthread -D_GNU_SOURCE
 LDFLAGS = 
 
 # Check for SIMD support
