@@ -1,6 +1,6 @@
 # krep - A high-performance string search utility
 
-![Version](https://img.shields.io/badge/version-0.1.4-blue)
+![Version](https://img.shields.io/badge/version-0.1.5-blue)
 ![License](https://img.shields.io/badge/license-BSD-green)
 
 `krep` is a blazingly fast string search utility designed for performance-critical applications. It implements multiple optimized search algorithms and leverages modern hardware capabilities to deliver maximum throughput.

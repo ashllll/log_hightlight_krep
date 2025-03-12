@@ -1,7 +1,7 @@
 /* krep - A high-performance string search utility
  *
  * Author: Davide Santangelo
- * Version: 0.1.4
+ * Version: 0.1.5
  * Year: 2025
  *
  * Features:
@@ -39,13 +39,21 @@
 
 #include "krep.h"
 
+// Add at the top of the file after includes, outside of any function
+static unsigned char lower_table[256];
+static void __attribute__((constructor)) init_lower_table(void) {
+    for (int i = 0; i < 256; i++) {
+        lower_table[i] = tolower(i);
+    }
+}
+
 /* Constants */
 #define MAX_PATTERN_LENGTH 1024
 #define MAX_LINE_LENGTH 4096
 #define DEFAULT_THREAD_COUNT 4
 #define MIN_FILE_SIZE_FOR_THREADS (1 * 1024 * 1024) // 1MB minimum for threading
 #define CHUNK_SIZE (16 * 1024 * 1024) // 16MB base chunk size
-#define VERSION "0.1.4"
+#define VERSION "0.1.5"
 
 /* Type definitions */
 typedef struct {
@@ -66,9 +74,6 @@ typedef struct {
     bool case_sensitive;
     int bad_char_table[256];
 } cached_pattern_t;
-
-/* Global cached pattern (for repeated searches) */
-static cached_pattern_t cached_pattern = { .pattern_len = 0 };
 
 /* Forward declarations */
 void print_usage(const char *program_name);
@@ -95,9 +100,9 @@ uint64_t avx2_search(const char *text, size_t text_len,
                     bool case_sensitive);
 #endif
 void* search_thread(void *arg);
-int search_file(const char *filename, const char *pattern, bool case_sensitive,
+int search_file(const char *filename, const char *pattern, size_t pattern_len, bool case_sensitive,
                bool count_only, int thread_count);
-int search_string(const char *pattern, const char *text, bool case_sensitive);
+int search_string(const char *pattern, size_t pattern_len, const char *text, bool case_sensitive);
 
 /**
  * Get current time with high precision for performance measurement
@@ -127,7 +132,7 @@ void prepare_bad_char_table(const char *pattern, size_t pattern_len,
     for (size_t i = 0; i < pattern_len - 1; i++) {
         unsigned char c = (unsigned char)pattern[i];
         if (!case_sensitive) {
-            c = tolower(c);
+            c = lower_table[c];
             bad_char_table[toupper(c)] = pattern_len - 1 - i;
         }
         bad_char_table[c] = pattern_len - 1 - i;
@@ -140,24 +145,14 @@ void prepare_bad_char_table(const char *pattern, size_t pattern_len,
 uint64_t boyer_moore_search(const char *text, size_t text_len,
                            const char *pattern, size_t pattern_len,
                            bool case_sensitive) {
+    init_lower_table();
     uint64_t match_count = 0;
     int bad_char_table[256];
 
     if (pattern_len == 0 || text_len < pattern_len) return 0;
 
-    // Use cached bad character table if available
-    if (cached_pattern.pattern_len == pattern_len &&
-        cached_pattern.case_sensitive == case_sensitive &&
-        strncmp(cached_pattern.pattern, pattern, pattern_len) == 0) {
-        memcpy(bad_char_table, cached_pattern.bad_char_table, sizeof(bad_char_table));
-    } else {
-        prepare_bad_char_table(pattern, pattern_len, bad_char_table, case_sensitive);
-        // Cache the result
-        strncpy(cached_pattern.pattern, pattern, pattern_len);
-        cached_pattern.pattern_len = pattern_len;
-        cached_pattern.case_sensitive = case_sensitive;
-        memcpy(cached_pattern.bad_char_table, bad_char_table, sizeof(bad_char_table));
-    }
+    // Always prepare the bad character table - no caching
+    prepare_bad_char_table(pattern, pattern_len, bad_char_table, case_sensitive);
 
     size_t i = pattern_len - 1;
     while (i < text_len) {
@@ -170,8 +165,8 @@ uint64_t boyer_moore_search(const char *text, size_t text_len,
             char text_char = text[i - (pattern_len - 1 - j)];
             char pattern_char = pattern[j];
             if (!case_sensitive) {
-                text_char = tolower(text_char);
-                pattern_char = tolower(pattern_char);
+                text_char = lower_table[(unsigned char)text_char];
+                pattern_char = lower_table[(unsigned char)pattern_char];
             }
             match = (text_char == pattern_char);
             j--;
@@ -188,7 +183,7 @@ uint64_t boyer_moore_search(const char *text, size_t text_len,
             i = start_pos + 1 + (pattern_len - 1);
         } else {
             unsigned char bad_char = text[i];
-            if (!case_sensitive) bad_char = tolower(bad_char);
+            if (!case_sensitive) bad_char = lower_table[bad_char];
             int skip = bad_char_table[bad_char];
             i += (skip > 0) ? skip : 1;
         }
@@ -207,16 +202,33 @@ uint64_t boyer_moore_search(const char *text, size_t text_len,
 uint64_t kmp_search(const char *text, size_t text_len,
                     const char *pattern, size_t pattern_len,
                     bool case_sensitive) {
+    init_lower_table();
     uint64_t match_count = 0;
     if (pattern_len == 0 || text_len < pattern_len) return 0;
 
     // Special case for single character patterns
     if (pattern_len == 1) {
-        char p = case_sensitive ? pattern[0] : tolower(pattern[0]);
-        for (size_t i = 0; i < text_len; i++) {
-            char t = case_sensitive ? text[i] : tolower(text[i]);
-            if (t == p) {
+        char p = case_sensitive ? pattern[0] : lower_table[(unsigned char)pattern[0]];
+        
+        if (case_sensitive) {
+            // For case-sensitive, we can use memchr for better performance
+            const char *ptr = text;
+            size_t remaining = text_len;
+            
+            while (remaining > 0) {
+                ptr = memchr(ptr, p, remaining);
+                if (!ptr) break;
+                
                 match_count++;
+                ptr++;
+                remaining = text_len - (ptr - text);
+            }
+        } else {
+            // For case-insensitive, use optimized table lookup
+            for (size_t i = 0; i < text_len; i++) {
+                if (lower_table[(unsigned char)text[i]] == p) {
+                    match_count++;
+                }
             }
         }
         return match_count;
@@ -233,11 +245,11 @@ uint64_t kmp_search(const char *text, size_t text_len,
     size_t j = 0;
     for (size_t i = 1; i < pattern_len; i++) {
         while (j > 0 && (case_sensitive ? pattern[i] != pattern[j] :
-                         tolower(pattern[i]) != tolower(pattern[j]))) {
+                         lower_table[(unsigned char)pattern[i]] != lower_table[(unsigned char)pattern[j]])) {
             j = prefix_table[j - 1];
         }
         if (case_sensitive ? pattern[i] == pattern[j] :
-            tolower(pattern[i]) == tolower(pattern[j])) {
+            lower_table[(unsigned char)pattern[i]] == lower_table[(unsigned char)pattern[j]]) {
             j++;
         }
         prefix_table[i] = j;
@@ -251,8 +263,8 @@ uint64_t kmp_search(const char *text, size_t text_len,
         char pattern_char = pattern[j];
 
         if (!case_sensitive) {
-            text_char = tolower(text_char);
-            pattern_char = tolower(pattern_char);
+            text_char = lower_table[(unsigned char)text_char];
+            pattern_char = lower_table[(unsigned char)pattern_char];
         }
 
         if (text_char == pattern_char) {
@@ -288,14 +300,15 @@ uint64_t kmp_search(const char *text, size_t text_len,
 uint64_t rabin_karp_search(const char *text, size_t text_len,
                           const char *pattern, size_t pattern_len,
                           bool case_sensitive) {
+    init_lower_table();
     uint64_t match_count = 0;
     if (pattern_len == 0 || text_len < pattern_len) return 0;
 
     // Special case for single character patterns
     if (pattern_len == 1) {
-        char p = case_sensitive ? pattern[0] : tolower(pattern[0]);
+        char p = case_sensitive ? pattern[0] : lower_table[(unsigned char)pattern[0]];
         for (size_t i = 0; i < text_len; i++) {
-            char t = case_sensitive ? text[i] : tolower(text[i]);
+            char t = case_sensitive ? text[i] : lower_table[(unsigned char)text[i]];
             if (t == p) {
                 match_count++;
             }
@@ -313,8 +326,8 @@ uint64_t rabin_karp_search(const char *text, size_t text_len,
                 char pc = pattern[j];
                 
                 if (!case_sensitive) {
-                    tc = tolower(tc);
-                    pc = tolower(pc);
+                    tc = lower_table[(unsigned char)tc];
+                    pc = lower_table[(unsigned char)pc];
                 }
                 
                 if (tc != pc) {
@@ -350,8 +363,8 @@ uint64_t rabin_karp_search(const char *text, size_t text_len,
         char tc = text[i];
         
         if (!case_sensitive) {
-            pc = tolower(pc);
-            tc = tolower(tc);
+            pc = lower_table[(unsigned char)pc];
+            tc = lower_table[(unsigned char)tc];
         }
         
         pattern_hash = (pattern_hash * base + pc) % prime;
@@ -369,8 +382,8 @@ uint64_t rabin_karp_search(const char *text, size_t text_len,
                 char tc = text[i + j];
                 
                 if (!case_sensitive) {
-                    pc = tolower(pc);
-                    tc = tolower(tc);
+                    pc = lower_table[(unsigned char)pc];
+                    tc = lower_table[(unsigned char)tc];
                 }
                 
                 if (pc != tc) {
@@ -391,8 +404,8 @@ uint64_t rabin_karp_search(const char *text, size_t text_len,
             char trailing = text[i + pattern_len];
             
             if (!case_sensitive) {
-                leading = tolower(leading);
-                trailing = tolower(trailing);
+                leading = lower_table[(unsigned char)leading];
+                trailing = lower_table[(unsigned char)trailing];
             }
             
             // Remove contribution of leading character
@@ -420,25 +433,40 @@ uint64_t simd_search(const char *text, size_t text_len,
     }
 
     if (!case_sensitive) {
-        char lower_pattern[16], upper_pattern[16];
-        memset(lower_pattern, 0, sizeof(lower_pattern));
-        memset(upper_pattern, 0, sizeof(upper_pattern));
-        
+        // Precompute lowercase pattern once
+        char lower_pattern[16] = {0};
         for (size_t i = 0; i < pattern_len; i++) {
-            lower_pattern[i] = tolower(pattern[i]);
-            upper_pattern[i] = toupper(pattern[i]);
+            lower_pattern[i] = lower_table[(unsigned char)pattern[i]];
         }
+        
+        // Load the lowercase pattern
         __m128i lp = _mm_loadu_si128((__m128i*)lower_pattern);
-        __m128i up = _mm_loadu_si128((__m128i*)upper_pattern);
-
+        
+        // Optimized lowercase conversion with SIMD
+        char lower_text[16];
         size_t i = 0;
         while (i <= text_len - pattern_len) {
+            // FIX: Only use SIMD if we have enough bytes available
             if (text_len - i >= 16) {
                 __m128i t = _mm_loadu_si128((__m128i*)(text + i));
-                __m128i lt = _mm_or_si128(_mm_and_si128(t, _mm_set1_epi8(0xDF)), _mm_set1_epi8(0x20));
-                int lm = _mm_cmpestri(lp, pattern_len, lt, pattern_len, _SIDD_CMP_EQUAL_ORDERED);
-                int um = _mm_cmpestri(up, pattern_len, lt, pattern_len, _SIDD_CMP_EQUAL_ORDERED);
-                if (lm == 0 || um == 0) {
+                // Convert text to lowercase for comparison
+                __m128i lowercase_mask = _mm_set1_epi8(0x20);
+                __m128i uppercase_mask = _mm_set1_epi8(0x5F);  // ~0x20
+                __m128i lt = _mm_or_si128(
+                    _mm_and_si128(t, uppercase_mask),  // Clear bit 5
+                    _mm_and_si128(                     // Set bit 5 only for alpha
+                        _mm_cmpgt_epi8(
+                            _mm_add_epi8(_mm_set1_epi8(-'A'), t),
+                            _mm_set1_epi8(25)
+                        ),
+                        lowercase_mask
+                    )
+                );
+                
+                // FIX: Correct return value check for _mm_cmpestri
+                // Value of 0 means match at position 0 (first position)
+                int match_pos = _mm_cmpestri(lp, pattern_len, lt, 16, _SIDD_CMP_EQUAL_ORDERED);
+                if (match_pos == 0) {
                     match_count++;
                     i++;
                 } else {
@@ -448,8 +476,8 @@ uint64_t simd_search(const char *text, size_t text_len,
                 // Fall back to scalar comparison for the final bytes
                 bool match = true;
                 for (size_t j = 0; j < pattern_len; j++) {
-                    char tc = text[i + j];
-                    char pc = lower_pattern[j];
+                    char tc = lower_table[(unsigned char)text[i + j]];
+                    char pc = lower_table[(unsigned char)pattern[j]];
                     if (tc != pc) {
                         match = false;
                         break;
@@ -465,11 +493,16 @@ uint64_t simd_search(const char *text, size_t text_len,
         __m128i p = _mm_loadu_si128((__m128i*)pattern);
         size_t i = 0;
         while (i <= text_len - pattern_len) {
+            // FIX: Only use SIMD if we have enough bytes available
             if (text_len - i >= 16) {
                 __m128i t = _mm_loadu_si128((__m128i*)(text + i));
-                if (_mm_cmpestri(p, pattern_len, t, pattern_len, _SIDD_CMP_EQUAL_ORDERED) == pattern_len) {
+                
+                // FIX: Correct return value check for _mm_cmpestri
+                // Value of 0 means match at position 0 (first position)
+                int match_pos = _mm_cmpestri(p, pattern_len, t, 16, _SIDD_CMP_EQUAL_ORDERED);
+                if (match_pos == 0) {
                     match_count++;
-                    i += pattern_len; // Skip ahead to avoid overlapping matches
+                    i++;
                 } else {
                     i++;
                 }
@@ -506,21 +539,9 @@ uint64_t avx2_search(const char *text, size_t text_len,
         return boyer_moore_search(text, text_len, pattern, pattern_len, case_sensitive);
     }
 
-    // Prepare pattern vectors
-    char lower_pattern[32], upper_pattern[32];
-    memset(lower_pattern, 0, sizeof(lower_pattern));
-    memset(upper_pattern, 0, sizeof(upper_pattern));
-    
-    for (size_t i = 0; i < pattern_len; i++) {
-        if (case_sensitive) {
-            lower_pattern[i] = pattern[i];
-        } else {
-            lower_pattern[i] = tolower(pattern[i]);
-            upper_pattern[i] = toupper(pattern[i]);
-        }
-    }
-    
-    // Scan through text, skipping by pattern_len after each match
+    // For AVX2, use similar buffer boundary checks
+    // Implementation can be expanded with true AVX2 instructions
+    // for better performance, but this ensures safety
     size_t i = 0;
     while (i <= text_len - pattern_len) {
         bool match = true;
@@ -528,23 +549,22 @@ uint64_t avx2_search(const char *text, size_t text_len,
         // Use standard comparison for accurate non-overlapping matches
         for (size_t j = 0; j < pattern_len; j++) {
             char tc = text[i + j];
-            char pc;
+            char pc = pattern[j];
             
-            if (case_sensitive) {
-                pc = lower_pattern[j];
-                match = (tc == pc);
-            } else {
-                tc = tolower(tc);
-                pc = lower_pattern[j];
-                match = (tc == pc);
+            if (!case_sensitive) {
+                tc = lower_table[(unsigned char)tc];
+                pc = lower_table[(unsigned char)pc];
             }
             
-            if (!match) break;
+            if (tc != pc) {
+                match = false;
+                break;
+            }
         }
         
         if (match) {
             match_count++;
-            i++; // Changed: increment by 1 instead of pattern_len to catch all matches
+            i++;
         } else {
             i++;
         }
@@ -584,8 +604,8 @@ void* search_thread(void *arg) {
                 char pattern_char = job->pattern[j];
                 
                 if (!job->case_sensitive) {
-                    text_char = tolower(text_char);
-                    pattern_char = tolower(pattern_char);
+                    text_char = lower_table[(unsigned char)text_char];
+                    pattern_char = lower_table[(unsigned char)pattern_char];
                 }
                 
                 if (text_char != pattern_char) {
@@ -642,10 +662,9 @@ void* search_thread(void *arg) {
 /**
  * Search within a string
  */
-int search_string(const char *pattern, const char *text, bool case_sensitive) {
+int search_string(const char *pattern, size_t pattern_len, const char *text, bool case_sensitive) {
     double start_time = get_time();
     size_t text_len = strlen(text);
-    size_t pattern_len = strlen(pattern);
     uint64_t match_count = 0;
 
     if (text_len == 0) {
@@ -689,10 +708,9 @@ int search_string(const char *pattern, const char *text, bool case_sensitive) {
 /**
  * Search within a file with adaptive threading
  */
-int search_file(const char *filename, const char *pattern, bool case_sensitive,
+int search_file(const char *filename, const char *pattern, size_t pattern_len, bool case_sensitive,
                 bool count_only, int thread_count) {
     double start_time = get_time();
-    size_t pattern_len = strlen(pattern);
     uint64_t match_count = 0;
 
     if (pattern_len == 0) {
@@ -886,6 +904,9 @@ int main(int argc, char *argv[]) {
     bool case_sensitive = true, count_only = false, string_mode = false;
     int thread_count = DEFAULT_THREAD_COUNT, opt;
 
+    // In main(), call this before processing
+    init_lower_table();
+
     while ((opt = getopt(argc, argv, "icvt:sh")) != -1) {
         switch (opt) {
             case 'i': case_sensitive = false; break;
@@ -925,48 +946,41 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
+    // Clean up any stray quotes or commas in the pattern
     char *p = clean_pattern;
+    char *q = clean_pattern; // Destination pointer
+    
     while (*p) {
-        if (*p == '\'' || *p == '"' || *p == ',') {
-            memmove(p, p+1, strlen(p));
-        } else {
-            p++;
+        if (*p != '\'' && *p != '"' && *p != ',') {
+            *q++ = *p;
         }
+        p++;
     }
-    // Use clean_pattern instead of pattern
-    // Don't forget to free(clean_pattern) when done
-
+    *q = '\0'; // Ensure null termination
+    
+    // Get the clean pattern length - keep this line
+    size_t clean_pattern_len = strlen(clean_pattern);
+    
     if (string_mode) {
         if (optind >= argc) {
-            fprintf(stderr, "Error: Missing text\n");
-            print_usage(argv[0]);
+            fprintf(stderr, "Error: Missing string to search within\n");
             free(clean_pattern);
             return 1;
         }
         input_string = argv[optind];
-        
-        // Clean up any stray quotes or commas in the input string
-        char *p = input_string;
-        while (*p) {
-            if (*p == '\'' || *p == '"' || *p == ',') {
-                memmove(p, p+1, strlen(p));
-            } else {
-                p++;
-            }
-        }
-        
-        int result = search_string(clean_pattern, input_string, case_sensitive);
+        int result = search_string(clean_pattern, clean_pattern_len, input_string, case_sensitive);
         free(clean_pattern);
         return result;
     } else {
-        if (optind >= argc) {
-            fprintf(stderr, "Error: Missing file\n");
-            print_usage(argv[0]);
+        // Use the filename if provided, otherwise use stdin
+        if (optind < argc) {
+            filename = argv[optind];
+        } else {
+            fprintf(stderr, "Error: Missing filename\n");
             free(clean_pattern);
             return 1;
         }
-        filename = argv[optind];
-        int result = search_file(filename, clean_pattern, case_sensitive, count_only, thread_count);
+        int result = search_file(filename, clean_pattern, clean_pattern_len, case_sensitive, count_only, thread_count);
         free(clean_pattern);
         return result;
     }
