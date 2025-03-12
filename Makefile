@@ -2,9 +2,12 @@
 # Author: Davide Santangelo
 # Version: 0.1.0
 
+PREFIX ?= /usr/local
+BINDIR = $(PREFIX)/bin
+
 CC = gcc
 CFLAGS = -Wall -Wextra -O3 -std=c11 -pthread -D_GNU_SOURCE -D_DEFAULT_SOURCE
-LDFLAGS = 
+LDFLAGS =
 
 # Check for SIMD support
 ifeq ($(shell $(CC) -march=native -dM -E - < /dev/null | grep -q '__SSE4_2__' && echo yes),yes)
@@ -46,9 +49,10 @@ clean:
 	rm -f $(OBJ) $(EXEC) $(TEST_OBJ) $(TEST_EXEC)
 
 install: $(EXEC)
-	install -m 755 $(EXEC) /usr/local/bin/
+	install -d $(DESTDIR)$(BINDIR)
+	install -m 755 $(EXEC) $(DESTDIR)$(BINDIR)/$(EXEC)
 
 uninstall:
-	rm -f /usr/local/bin/$(EXEC)
+	rm -f $(DESTDIR)$(BINDIR)/$(EXEC)
 
 .PHONY: all clean install uninstall test
