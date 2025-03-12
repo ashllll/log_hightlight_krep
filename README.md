@@ -1,6 +1,6 @@
 # krep - A high-performance string search utility
 
-![Version](https://img.shields.io/badge/version-0.1.5-blue)
+![Version](https://img.shields.io/badge/version-0.1.6-blue)
 ![License](https://img.shields.io/badge/license-BSD-green)
 
 `krep` is a blazingly fast string search utility designed for performance-critical applications. It implements multiple optimized search algorithms and leverages modern hardware capabilities to deliver maximum throughput.
@@ -14,13 +14,15 @@ https://dev.to/daviducolo/introducing-krep-building-a-high-performance-string-se
 ## Features
 
 - **Multiple optimized search algorithms**
-  - Boyer-Moore-Horspool algorithm for efficient pattern matching
+  - Boyer-Moore-Horspool algorithm for general-purpose efficient pattern matching
+  - Knuth-Morris-Pratt (KMP) algorithm optimized for short patterns
+  - Rabin-Karp algorithm for longer pattern lengths
   - SIMD acceleration on compatible hardware (SSE4.2, AVX2)
   
 - **Maximum performance**
   - Memory-mapped file I/O for optimal throughput
   - Multi-threaded parallel search for large files
-  - Automatic algorithm selection based on hardware capabilities
+  - Automatic algorithm selection based on pattern characteristics and hardware capabilities
 
 - **Flexible search options**
   - Case-sensitive and case-insensitive matching
@@ -86,11 +88,11 @@ krep -s "Hello" "Hello world"
 `krep` is designed with performance as a primary goal:
 
 - **Memory-mapped I/O**: Avoids costly read() system calls
-- **Optimized algorithms**: Uses Boyer-Moore-Horspool algorithm by default
+- **Optimized algorithms**: Uses multiple string-matching algorithms optimized for different scenarios
 - **SIMD acceleration**: Utilizes SSE4.2 or AVX2 when available
 - **Multi-threading**: Processes large files in parallel chunks
 - **Minimal allocations**: Reduces memory overhead and fragmentation
-- 
+
 ## Benchmarks
 
 Performance compared to standard tools (searching a 1GB text file for a common pattern):
@@ -107,11 +109,17 @@ Performance compared to standard tools (searching a 1GB text file for a common p
 
 `krep` uses several strategies to achieve high performance:
 
-1. **Algorithm selection**: Automatically chooses between Boyer-Moore-Horspool and SIMD-accelerated search based on hardware capabilities and pattern characteristics
+1. **Intelligent algorithm selection**: Automatically chooses the optimal algorithm based on pattern characteristics:
+   - KMP for very short patterns (< 3 characters)
+   - SIMD/AVX2 for medium-length patterns (when hardware supports it)
+   - Boyer-Moore for medium-length patterns (when SIMD is unavailable)
+   - Rabin-Karp for longer patterns (> 16 characters)
 
 2. **Parallelization strategy**: For files larger than 1MB, splits the search into chunks and processes them concurrently
 
 3. **Memory efficiency**: Uses memory-mapped I/O to leverage the operating system's page cache
+
+4. **Hardware acceleration**: Automatically detects and utilizes SSE4.2 and AVX2 instructions when available
 
 ## Testing
 
