@@ -1,7 +1,7 @@
 /* krep - A high-performance string search utility
  *
  * Author: Davide Santangelo
- * Version: 0.1.3
+ * Version: 0.1.4
  * Year: 2025
  *
  * Features:
@@ -45,7 +45,7 @@
 #define DEFAULT_THREAD_COUNT 4
 #define MIN_FILE_SIZE_FOR_THREADS (1 * 1024 * 1024) // 1MB minimum for threading
 #define CHUNK_SIZE (16 * 1024 * 1024) // 16MB base chunk size
-#define VERSION "0.1.0"
+#define VERSION "0.1.4"
 
 /* Type definitions */
 typedef struct {
@@ -433,14 +433,31 @@ uint64_t simd_search(const char *text, size_t text_len,
 
         size_t i = 0;
         while (i <= text_len - pattern_len) {
-            __m128i t = _mm_loadu_si128((__m128i*)(text + i));
-            __m128i lt = _mm_or_si128(_mm_and_si128(t, _mm_set1_epi8(0xDF)), _mm_set1_epi8(0x20));
-            int lm = _mm_cmpestri(lp, pattern_len, lt, pattern_len, _SIDD_CMP_EQUAL_ORDERED);
-            int um = _mm_cmpestri(up, pattern_len, lt, pattern_len, _SIDD_CMP_EQUAL_ORDERED);
-            if (lm == 0 || um == 0) {
-                match_count++;
-                i++;
+            if (text_len - i >= 16) {
+                __m128i t = _mm_loadu_si128((__m128i*)(text + i));
+                __m128i lt = _mm_or_si128(_mm_and_si128(t, _mm_set1_epi8(0xDF)), _mm_set1_epi8(0x20));
+                int lm = _mm_cmpestri(lp, pattern_len, lt, pattern_len, _SIDD_CMP_EQUAL_ORDERED);
+                int um = _mm_cmpestri(up, pattern_len, lt, pattern_len, _SIDD_CMP_EQUAL_ORDERED);
+                if (lm == 0 || um == 0) {
+                    match_count++;
+                    i++;
+                } else {
+                    i++;
+                }
             } else {
+                // Fall back to scalar comparison for the final bytes
+                bool match = true;
+                for (size_t j = 0; j < pattern_len; j++) {
+                    char tc = text[i + j];
+                    char pc = lower_pattern[j];
+                    if (tc != pc) {
+                        match = false;
+                        break;
+                    }
+                }
+                if (match) {
+                    match_count++;
+                }
                 i++;
             }
         }
@@ -448,11 +465,26 @@ uint64_t simd_search(const char *text, size_t text_len,
         __m128i p = _mm_loadu_si128((__m128i*)pattern);
         size_t i = 0;
         while (i <= text_len - pattern_len) {
-            __m128i t = _mm_loadu_si128((__m128i*)(text + i));
-            if (_mm_cmpestri(p, pattern_len, t, pattern_len, _SIDD_CMP_EQUAL_ORDERED) == 0) {
-                match_count++;
-                i += pattern_len; // Skip ahead to avoid overlapping matches
+            if (text_len - i >= 16) {
+                __m128i t = _mm_loadu_si128((__m128i*)(text + i));
+                if (_mm_cmpestri(p, pattern_len, t, pattern_len, _SIDD_CMP_EQUAL_ORDERED) == pattern_len) {
+                    match_count++;
+                    i += pattern_len; // Skip ahead to avoid overlapping matches
+                } else {
+                    i++;
+                }
             } else {
+                // Fall back to scalar comparison for the final bytes
+                bool match = true;
+                for (size_t j = 0; j < pattern_len; j++) {
+                    if (text[i + j] != pattern[j]) {
+                        match = false;
+                        break;
+                    }
+                }
+                if (match) {
+                    match_count++;
+                }
                 i++;
             }
         }
@@ -886,23 +918,29 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    // Debug output for command line arguments
-    if (optind < argc) {
-        // Clean up any stray quotes or commas in the pattern or input
-        char *p = pattern;
-        while (*p) {
-            if (*p == '\'' || *p == '"' || *p == ',') {
-                memmove(p, p+1, strlen(p));
-            } else {
-                p++;
-            }
+    // Replace direct modification with strdup
+    char *clean_pattern = strdup(pattern);
+    if (clean_pattern == NULL) {
+        fprintf(stderr, "Memory allocation error\n");
+        return 1;
+    }
+
+    char *p = clean_pattern;
+    while (*p) {
+        if (*p == '\'' || *p == '"' || *p == ',') {
+            memmove(p, p+1, strlen(p));
+        } else {
+            p++;
         }
     }
+    // Use clean_pattern instead of pattern
+    // Don't forget to free(clean_pattern) when done
 
     if (string_mode) {
         if (optind >= argc) {
             fprintf(stderr, "Error: Missing text\n");
             print_usage(argv[0]);
+            free(clean_pattern);
             return 1;
         }
         input_string = argv[optind];
@@ -917,15 +955,20 @@ int main(int argc, char *argv[]) {
             }
         }
         
-        return search_string(pattern, input_string, case_sensitive);
+        int result = search_string(clean_pattern, input_string, case_sensitive);
+        free(clean_pattern);
+        return result;
     } else {
         if (optind >= argc) {
             fprintf(stderr, "Error: Missing file\n");
             print_usage(argv[0]);
+            free(clean_pattern);
             return 1;
         }
         filename = argv[optind];
-        return search_file(filename, pattern, case_sensitive, count_only, thread_count);
+        int result = search_file(filename, clean_pattern, case_sensitive, count_only, thread_count);
+        free(clean_pattern);
+        return result;
     }
 }
 #endif
