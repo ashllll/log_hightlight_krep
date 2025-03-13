@@ -14,9 +14,19 @@ LDFLAGS =
 
 # Architecture-specific optimizations
 ifeq ($(ENABLE_ARCH_DETECTION),1)
+    # Detect OS first
+    OS := $(shell uname -s)
+    
     # Detect architecture type
     ARCH := $(shell uname -m)
-    OS := $(shell uname -s)
+    
+    # Special case for PowerPC Macs which return "Power Macintosh" from uname -m
+    ifeq ($(OS),Darwin)
+        ifeq ($(ARCH),Power Macintosh)
+            # Use uname -p instead which returns "powerpc"
+            ARCH := $(shell uname -p)
+        endif
+    endif
     
     # x86/x86_64 uses -march=native
     ifneq (,$(filter x86_64 i386 i686,$(ARCH)))
@@ -31,7 +41,7 @@ ifeq ($(ENABLE_ARCH_DETECTION),1)
     endif
     
     # PowerPC uses -mcpu=native
-    ifneq (,$(filter ppc ppc64 powerpc,$(ARCH)))
+    ifneq (,$(filter ppc ppc64 powerpc powerpc64,$(ARCH)))
         # Check for SIMD support on PowerPC
         ifeq ($(shell $(CC) -mcpu=native -dM -E - < /dev/null 2>/dev/null | grep -q 'ALTIVEC' && echo yes),yes)
             CFLAGS += -maltivec
