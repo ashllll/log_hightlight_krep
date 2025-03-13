@@ -5,17 +5,57 @@
 PREFIX ?= /usr/local
 BINDIR = $(PREFIX)/bin
 
+# Set to 0 to disable architecture-specific optimizations
+ENABLE_ARCH_DETECTION ?= 1
+
 CC = gcc
 CFLAGS = -Wall -Wextra -O3 -std=c11 -pthread -D_GNU_SOURCE -D_DEFAULT_SOURCE
 LDFLAGS =
 
-# Check for SIMD support
-ifeq ($(shell $(CC) -march=native -dM -E - < /dev/null | grep -q '__SSE4_2__' && echo yes),yes)
-    CFLAGS += -msse4.2
-endif
+# Architecture-specific optimizations
+ifeq ($(ENABLE_ARCH_DETECTION),1)
+    # Detect architecture type
+    ARCH := $(shell uname -m)
+    OS := $(shell uname -s)
+    
+    # x86/x86_64 uses -march=native
+    ifneq (,$(filter x86_64 i386 i686,$(ARCH)))
+        # Check for SIMD support on x86/x86_64
+        ifeq ($(shell $(CC) -march=native -dM -E - < /dev/null 2>/dev/null | grep -q '__SSE4_2__' && echo yes),yes)
+            CFLAGS += -msse4.2
+        endif
 
-ifeq ($(shell $(CC) -march=native -dM -E - < /dev/null | grep -q '__AVX2__' && echo yes),yes)
-    CFLAGS += -mavx2
+        ifeq ($(shell $(CC) -march=native -dM -E - < /dev/null 2>/dev/null | grep -q '__AVX2__' && echo yes),yes)
+            CFLAGS += -mavx2
+        endif
+    endif
+    
+    # PowerPC uses -mcpu=native
+    ifneq (,$(filter ppc ppc64 powerpc,$(ARCH)))
+        # Check for SIMD support on PowerPC
+        ifeq ($(shell $(CC) -mcpu=native -dM -E - < /dev/null 2>/dev/null | grep -q 'ALTIVEC' && echo yes),yes)
+            CFLAGS += -maltivec
+        endif
+    endif
+    
+    # ARM detection
+    ifneq (,$(filter arm arm64 aarch64,$(ARCH)))
+        # Special case for Apple Silicon (macOS on ARM)
+        ifneq (,$(filter Darwin,$(OS)))
+            # Apple Silicon has NEON by default, no need for special flags
+            # Just define the feature macro if needed
+            CFLAGS += -D__ARM_NEON
+        else
+            # For other ARM platforms (Linux, etc.), try to use appropriate flags
+            ifeq ($(shell $(CC) -mcpu=native -dM -E - < /dev/null 2>/dev/null | grep -q '__ARM_NEON' && echo yes),yes)
+                # Different ARM platforms may use different flag syntax
+                ifneq (,$(filter arm,$(ARCH)))
+                    CFLAGS += -mfpu=neon
+                endif
+                # For arm64/aarch64, NEON is typically standard and doesn't need -mfpu
+            endif
+        endif
+    endif
 endif
 
 SRC = krep.c
@@ -46,7 +86,7 @@ krep_test.o: $(SRC)
 	$(CC) $(CFLAGS) -DTESTING -c $(SRC) -o krep_test.o
 
 clean:
-	rm -f $(OBJ) $(EXEC) $(TEST_OBJ) $(TEST_EXEC)
+	rm -f $(OBJ) $(EXEC) $(TEST_OBJ) $(TEST_EXEC) krep_test.o
 
 install: $(EXEC)
 	install -d $(DESTDIR)$(BINDIR)
