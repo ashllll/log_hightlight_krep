@@ -1,7 +1,7 @@
 /* krep - A high-performance string search utility
  *
  * Author: Davide Santangelo
- * Version: 0.1.6
+ * Version: 0.1.7
  * Year: 2025
  *
  * Features:
@@ -53,7 +53,7 @@ static void __attribute__((constructor)) init_lower_table(void) {
 #define DEFAULT_THREAD_COUNT 4
 #define MIN_FILE_SIZE_FOR_THREADS (1 * 1024 * 1024) // 1MB minimum for threading
 #define CHUNK_SIZE (16 * 1024 * 1024) // 16MB base chunk size
-#define VERSION "0.1.6"
+#define VERSION "0.1.7"
 
 /* Type definitions */
 typedef struct {
