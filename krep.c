@@ -6,7 +6,7 @@
  *
  * Features:
  * - Multiple search algorithms (Boyer-Moore-Horspool, KMP, Rabin-Karp)
- * - Basic SIMD (SSE4.2) acceleration implemented
+ * - Basic SIMD (SSE4.2) acceleration implemented (Currently Disabled - Fallback)
  * - Placeholders for AVX2 acceleration
  * - Memory-mapped file I/O for maximum throughput
  * - Multi-threaded parallel search for large files
@@ -498,90 +498,67 @@ uint64_t rabin_karp_search(const char *text, size_t text_len,
  * SIMD-accelerated search with SSE4.2 using _mm_cmpestri.
  * Counts matches starting *before* report_limit_offset.
  * Best for patterns of length 1 to 16 bytes. Case-sensitive only currently.
+ *
+ * NOTE: Temporarily disabled due to correctness issues (overcounting / start match).
+ * Falling back to Boyer-Moore.
  */
 uint64_t simd_sse42_search(const char *text, size_t text_len,
                            const char *pattern, size_t pattern_len,
                            bool case_sensitive, size_t report_limit_offset)
 {
+    // --- TEMPORARY FALLBACK ---
+    // The previous _mm_cmpestri implementation had correctness issues (overcounting,
+    // failing start match test) across different advancement logic attempts.
+    // Disabling for now to ensure overall correctness.
+    // TODO: Re-implement SSE4.2 search robustly, possibly using a different
+    // approach like first-char match + memcmp or _mm_cmpestrm.
+    // fprintf(stderr, "Warning: SSE4.2 search temporarily disabled, falling back to Boyer-Moore.\n");
+    return boyer_moore_search(text, text_len, pattern, pattern_len, case_sensitive, report_limit_offset);
+
+    /* --- START OF PREVIOUS (BUGGY) IMPLEMENTATION ---
     uint64_t match_count = 0;
     // Check if SSE4.2 is usable for this case
-    if (pattern_len == 0 || pattern_len > SIMD_MAX_LEN_SSE42 || text_len < pattern_len || report_limit_offset == 0)
-    {
-        // Fallback for unsupported pattern lengths or trivial cases
+    if (pattern_len == 0 || pattern_len > SIMD_MAX_LEN_SSE42 || text_len < pattern_len || report_limit_offset == 0) {
         return boyer_moore_search(text, text_len, pattern, pattern_len, case_sensitive, report_limit_offset);
     }
-
-    // SSE4.2 PCMPESTRI does not directly support case-insensitivity efficiently.
-    // Fallback to scalar for case-insensitive searches.
-    if (!case_sensitive)
-    {
-        // fprintf(stderr, "Warning: SSE4.2 case-insensitive search falling back to Boyer-Moore.\n");
-        return boyer_moore_search(text, text_len, pattern, pattern_len, case_sensitive, report_limit_offset);
+    if (!case_sensitive) {
+         return boyer_moore_search(text, text_len, pattern, pattern_len, case_sensitive, report_limit_offset);
     }
 
-    // Load the pattern into an XMM register. Unaligned load is safe here.
-    __m128i pattern_vec = _mm_loadu_si128((const __m128i *)pattern);
-
-    // Define the comparison mode for _mm_cmpestri:
-    // Find equal ordered substrings, return index of first match byte.
+    __m128i pattern_vec = _mm_loadu_si128((const __m128i*)pattern);
     const int mode = _SIDD_UBYTE_OPS | _SIDD_CMP_EQUAL_ORDERED | _SIDD_POSITIVE_POLARITY | _SIDD_LEAST_SIGNIFICANT;
-
     size_t current_pos = 0;
-    size_t limit = text_len - pattern_len; // Max starting position for a full match
+    size_t limit = text_len - pattern_len;
 
-    while (current_pos <= limit)
-    {
-        // Determine how many bytes we can safely load for the text vector
-        // We need at least 16 bytes for _mm_cmpestri's text operand length `lb`.
+    while (current_pos <= limit) {
         size_t remaining_text = text_len - current_pos;
-        if (remaining_text < 16)
-        {
-            // Not enough text left for a full 16-byte SIMD compare.
-            // Handle the tail end using scalar search.
-            if (current_pos < report_limit_offset)
-            {
+        if (remaining_text < 16) {
+            if (current_pos < report_limit_offset) {
                 size_t scalar_limit = report_limit_offset - current_pos;
-                if (scalar_limit > remaining_text)
-                    scalar_limit = remaining_text; // Clamp limit
-                match_count += boyer_moore_search(text + current_pos, remaining_text,
+                if (scalar_limit > remaining_text) scalar_limit = remaining_text;
+                 match_count += boyer_moore_search(text + current_pos, remaining_text,
                                                   pattern, pattern_len,
                                                   case_sensitive, scalar_limit);
             }
-            break; // Done with the SIMD part
+            break;
         }
 
-        // Load 16 bytes of text (unaligned load)
-        __m128i text_vec = _mm_loadu_si128((const __m128i *)(text + current_pos));
-
-        // Perform the comparison: find pattern (len pattern_len) in text_vec (len 16)
+        __m128i text_vec = _mm_loadu_si128((const __m128i*)(text + current_pos));
         int index = _mm_cmpestri(pattern_vec, pattern_len, text_vec, 16, mode);
 
-        // _mm_cmpestri returns the index within text_vec (0-15) if found, or 16 if not found.
-        if (index < 16)
-        {
-            // Potential match found starting at index 'index' within the current 16-byte chunk.
+        if (index < 16) {
             size_t match_start_pos = current_pos + index;
-
-            // Check if match start is within the reporting limit
-            if (match_start_pos < report_limit_offset)
-            {
-                match_count++;
+            if (match_start_pos < report_limit_offset) {
+                 match_count++;
             }
-            // FIX: Advance position past the *end* of the found match
-            // This avoids potential overcounting issues from the previous (index + 1) logic
-            // when multiple matches could start within the same 16-byte window before advancing.
-            // It focuses on finding distinct matches efficiently.
-            current_pos += (index + pattern_len);
-        }
-        else
-        {
-            // No match found in this 16-byte block.
-            // Advance the search window using the optimized skip.
+            // Advancement logic (tried index + 1 and index + pattern_len, both failed tests)
+            current_pos += (index + pattern_len); // Using non-overlapping advance attempt
+        } else {
             current_pos += (pattern_len <= 15) ? (16 - pattern_len + 1) : 1;
         }
     }
-
     return match_count;
+    --- END OF PREVIOUS (BUGGY) IMPLEMENTATION --- */
 }
 #endif // __SSE4_2__
 
@@ -595,19 +572,10 @@ uint64_t simd_avx2_search(const char *text, size_t text_len,
                           bool case_sensitive, size_t report_limit_offset)
 {
     // TODO: Implement correct AVX2 search using _mm256 intrinsics.
-    // Techniques might involve:
-    // - Loading 32-byte text chunks (_mm256_loadu_si256).
-    // - Broadcasting the first pattern byte (_mm256_set1_epi8).
-    // - Comparing first bytes (_mm256_cmpeq_epi8).
-    // - Creating a mask (_mm256_movemask_epi8).
-    // - If first bytes match, perform full comparison for candidates using scalar or other SIMD.
-    // - Handling case-insensitivity efficiently (e.g., _mm256_shuffle_epi8 for lowercase conversion).
-    // - Handling matches across 32-byte boundaries.
-
     // Fallback to SSE4.2 if available and suitable, otherwise Boyer-Moore
     // fprintf(stderr, "Warning: AVX2 search not implemented, falling back.\n");
 #ifdef __SSE4_2__
-    // Use SSE4.2 if pattern length allows and it's implemented
+    // Use SSE4.2 (which currently falls back to BMH) if pattern length allows
     if (pattern_len <= SIMD_MAX_LEN_SSE42)
     { // Use SSE4.2 constant
         return simd_sse42_search(text, text_len, pattern, pattern_len, case_sensitive, report_limit_offset);
