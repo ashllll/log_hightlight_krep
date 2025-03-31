@@ -43,7 +43,7 @@
 #define DEFAULT_THREAD_COUNT 4
 #define MIN_FILE_SIZE_FOR_THREADS (1 * 1024 * 1024) // 1MB minimum for threading
 #define CHUNK_SIZE (16 * 1024 * 1024)               // 16MB base chunk size
-#define VERSION "0.2.2"                             // Incremented version
+#define VERSION "0.2.1"                             // Incremented version
 
 // Global lookup table for fast lowercasing
 static unsigned char lower_table[256];
