@@ -1,7 +1,7 @@
 /* krep - A high-performance string search utility
  *
  * Author: Davide Santangelo
- * Version: 0.2.2
+ * Version: 0.2.3
  * Year: 2025
  *
  * Features:
@@ -50,7 +50,7 @@ const size_t SIMD_MAX_LEN_AVX2 = 32;
 #define DEFAULT_THREAD_COUNT 4
 #define MIN_FILE_SIZE_FOR_THREADS (1 * 1024 * 1024) // 1MB minimum for threading
 #define CHUNK_SIZE (16 * 1024 * 1024)               // 16MB base chunk size (adjust based on L3 cache?)
-#define VERSION "0.2.2"
+#define VERSION "0.2.3"
 
 // --- Global lookup table for fast lowercasing ---
 static unsigned char lower_table[256];
@@ -568,21 +568,11 @@ uint64_t simd_sse42_search(const char *text, size_t text_len,
                 match_count++;
             }
             // Advance position past the start of the found match to find the next one.
-            // Advancing by index + 1 is simple but might re-check overlaps unnecessarily.
-            // Advancing by 1 guarantees finding all matches but is slow.
-            // A better heuristic might be needed, e.g., index + pattern_len for non-overlapping,
-            // or use _mm_cmpestrm to find all matches in the block.
-            // Let's use index + 1 for now to ensure all overlapping matches are found.
             current_pos += (index + 1);
         }
         else
         {
-            // No match found in this 16-byte block.
-            // Advance the search window. How much?
-            // A safe and reasonably efficient advance for _cmpestri is 16 - pattern_len + 1.
-            // This ensures the end of the next window overlaps correctly.
-            // If pattern_len is 16, advance by 1.
-            current_pos += (pattern_len <= 15) ? (16 - pattern_len + 1) : 1;
+            current_pos++;
         }
     }
 
