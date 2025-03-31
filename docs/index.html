@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -19,20 +20,20 @@
             --gradient-start: #6366f1;
             --gradient-end: #8b5cf6;
         }
-        
+
         * {
             margin: 0;
             padding: 0;
             box-sizing: border-box;
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
         }
-        
+
         body {
             background-color: var(--dark-bg);
             color: var(--light-text);
             line-height: 1.6;
         }
-        
+
         header {
             height: 100vh;
             display: flex;
@@ -45,7 +46,7 @@
             overflow: hidden;
             background: linear-gradient(45deg, var(--gradient-start), var(--gradient-end));
         }
-        
+
         .particles {
             position: absolute;
             top: 0;
@@ -54,13 +55,13 @@
             height: 100%;
             z-index: 1;
         }
-        
+
         .header-content {
             position: relative;
             z-index: 2;
             max-width: 900px;
         }
-        
+
         h1 {
             font-size: 6rem;
             margin-bottom: 0.5rem;
@@ -70,20 +71,20 @@
             background-clip: text;
             -webkit-text-fill-color: transparent;
         }
-        
+
         .tagline {
             font-size: 1.8rem;
             margin-bottom: 2rem;
             opacity: 0.9;
         }
-        
+
         .header-buttons {
             display: flex;
             gap: 1rem;
             justify-content: center;
             margin-top: 2rem;
         }
-        
+
         .btn {
             display: inline-flex;
             align-items: center;
@@ -95,45 +96,45 @@
             transition: all 0.3s ease;
             font-size: 1rem;
         }
-        
+
         .btn-primary {
             background-color: var(--light-text);
             color: var(--dark-text);
         }
-        
+
         .btn-secondary {
             background-color: transparent;
             color: var(--light-text);
             border: 2px solid var(--light-text);
         }
-        
+
         .btn:hover {
             transform: translateY(-3px);
             box-shadow: 0 10px 20px rgba(0, 0, 0, 0.2);
         }
-        
+
         section {
             padding: 6rem 2rem;
         }
-        
+
         .container {
             max-width: 1200px;
             margin: 0 auto;
         }
-        
+
         .section-title {
             text-align: center;
             margin-bottom: 3rem;
             font-size: 2.5rem;
             color: var(--secondary-color);
         }
-        
+
         .features {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
             gap: 2rem;
         }
-        
+
         .feature-card {
             background-color: var(--card-bg);
             border-radius: 1rem;
@@ -141,28 +142,28 @@
             transition: all 0.3s ease;
             box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
         }
-        
+
         .feature-card:hover {
             transform: translateY(-10px);
             box-shadow: 0 10px 20px rgba(0, 0, 0, 0.2);
         }
-        
+
         .feature-icon {
             font-size: 2rem;
             color: var(--primary-color);
             margin-bottom: 1rem;
         }
-        
+
         .feature-title {
             font-size: 1.5rem;
             margin-bottom: 1rem;
             color: var(--secondary-color);
         }
-        
+
         .code-section {
             background-color: var(--section-bg);
         }
-        
+
         .code-container {
             background-color: var(--code-bg);
             border-radius: 0.5rem;
@@ -171,43 +172,43 @@
             margin-bottom: 2rem;
             box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
         }
-        
+
         code {
             font-family: 'Courier New', Courier, monospace;
         }
-        
+
         .performance-section {
             background: linear-gradient(135deg, var(--dark-bg), var(--section-bg));
         }
-        
+
         .charts {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
             gap: 2rem;
         }
-        
+
         .chart-container {
             background-color: var(--card-bg);
             border-radius: 1rem;
             padding: 2rem;
             height: 400px;
         }
-        
+
         .installation-section {
             background-color: var(--dark-bg);
         }
-        
+
         .installation-steps {
             max-width: 800px;
             margin: 0 auto;
         }
-        
+
         .step {
             margin-bottom: 2rem;
             padding-left: 2rem;
             position: relative;
         }
-        
+
         .step::before {
             content: "";
             position: absolute;
@@ -218,30 +219,30 @@
             border-radius: 50%;
             background-color: var(--primary-color);
         }
-        
+
         footer {
             background-color: var(--code-bg);
             padding: 2rem;
             text-align: center;
         }
-        
+
         .social-links {
             display: flex;
             justify-content: center;
             margin-bottom: 1rem;
             gap: 1rem;
         }
-        
+
         .social-link {
             color: var(--secondary-color);
             font-size: 1.5rem;
             transition: color 0.3s ease;
         }
-        
+
         .social-link:hover {
             color: var(--primary-color);
         }
-        
+
         .terminal-header {
             display: flex;
             align-items: center;
@@ -251,26 +252,26 @@
             border-top-right-radius: 0.5rem;
             margin-bottom: 0;
         }
-        
+
         .terminal-button {
             width: 12px;
             height: 12px;
             border-radius: 50%;
             margin-right: 6px;
         }
-        
+
         .terminal-button.red {
             background-color: #e53e3e;
         }
-        
+
         .terminal-button.yellow {
             background-color: #ecc94b;
         }
-        
+
         .terminal-button.green {
             background-color: #48bb78;
         }
-        
+
         .terminal-body {
             background-color: #1a202c;
             padding: 1rem;
@@ -280,83 +281,87 @@
             font-family: 'Courier New', Courier, monospace;
             position: relative;
         }
-        
+
         .highlight-comment {
             color: #63b3ed;
         }
-        
+
         .benchmark-table {
             width: 100%;
             border-collapse: collapse;
             margin-top: 2rem;
         }
-        
-        .benchmark-table th, .benchmark-table td {
+
+        .benchmark-table th,
+        .benchmark-table td {
             padding: 0.75rem 1rem;
             text-align: left;
             border-bottom: 1px solid #4a5568;
         }
-        
+
         .benchmark-table th {
             background-color: #2d3748;
             font-weight: 600;
         }
-        
+
         .benchmark-table tr:hover {
             background-color: #2d3748;
         }
-        
+
         /* Animation */
         @keyframes float {
             0% {
                 transform: translateY(0px);
             }
+
             50% {
                 transform: translateY(-20px);
             }
+
             100% {
                 transform: translateY(0px);
             }
         }
-        
+
         .floating {
             animation: float 4s ease-in-out infinite;
         }
-        
+
         @media (max-width: 768px) {
             h1 {
                 font-size: 3rem;
             }
-            
+
             .tagline {
                 font-size: 1.2rem;
             }
-            
+
             .header-buttons {
                 flex-direction: column;
                 align-items: center;
             }
-            
+
             .charts {
                 grid-template-columns: 1fr;
             }
         }
     </style>
 </head>
+
 <body>
     <header>
         <canvas class="particles" id="particles"></canvas>
         <div class="header-content">
             <h1>krep</h1>
             <p class="tagline">A blazingly fast string search utility for performance-critical applications</p>
-            
+
             <div class="stats-counters">
                 <div class="stat">
                     <span class="stat-number">5x</span>
                     <span class="stat-label">Faster than grep</span>
                 </div>
             </div>
-            
+
             <div class="header-buttons">
                 <a href="https://github.com/davidesantangelo/krep" class="btn btn-primary">
                     <i class="fab fa-github"></i> GitHub
@@ -367,7 +372,7 @@
             </div>
         </div>
     </header>
-    
+
     <section id="features">
         <div class="container">
             <h2 class="section-title">Features</h2>
@@ -377,9 +382,10 @@
                         <i class="fas fa-bolt"></i>
                     </div>
                     <h3 class="feature-title">High Performance</h3>
-                    <p>Optimized algorithms and memory-mapped file I/O deliver up to 5x faster search speeds than traditional tools.</p>
+                    <p>Optimized algorithms and memory-mapped file I/O deliver up to 5x faster search speeds than
+                        traditional tools.</p>
                 </div>
-                
+
                 <div class="feature-card">
                     <div class="feature-icon">
                         <i class="fas fa-microchip"></i>
@@ -387,31 +393,34 @@
                     <h3 class="feature-title">Hardware Acceleration</h3>
                     <p>Automatically leverages SSE4.2 and AVX2 instructions when available for maximum throughput.</p>
                 </div>
-                
+
                 <div class="feature-card">
                     <div class="feature-icon">
                         <i class="fas fa-code-branch"></i>
                     </div>
                     <h3 class="feature-title">Multi-Threading</h3>
-                    <p>Parallel processing for large files with intelligent chunk boundaries to ensure accurate results.</p>
+                    <p>Parallel processing for large files with intelligent chunk boundaries to ensure accurate results.
+                    </p>
                 </div>
-                
+
                 <div class="feature-card">
                     <div class="feature-icon">
                         <i class="fas fa-brain"></i>
                     </div>
                     <h3 class="feature-title">Smart Algorithm Selection</h3>
-                    <p>Dynamically chooses the best algorithm based on pattern characteristics and hardware capabilities.</p>
+                    <p>Dynamically chooses the best algorithm based on pattern characteristics and hardware
+                        capabilities.</p>
                 </div>
-                
+
                 <div class="feature-card">
                     <div class="feature-icon">
                         <i class="fas fa-memory"></i>
                     </div>
                     <h3 class="feature-title">Memory Efficient</h3>
-                    <p>Uses memory mapping and minimal allocations to reduce memory overhead while maintaining performance.</p>
+                    <p>Uses memory mapping and minimal allocations to reduce memory overhead while maintaining
+                        performance.</p>
                 </div>
-                
+
                 <div class="feature-card">
                     <div class="feature-icon">
                         <i class="fas fa-terminal"></i>
@@ -422,11 +431,11 @@
             </div>
         </div>
     </section>
-    
+
     <section id="code-examples" class="code-section">
         <div class="container">
             <h2 class="section-title">Usage Examples</h2>
-            
+
             <div class="terminal-container">
                 <div class="terminal-header">
                     <div class="terminal-button red"></div>
@@ -447,7 +456,7 @@
                     <p>$ krep -s "Hello" "Hello world"</p>
                 </div>
             </div>
-            
+
             <h3 style="margin-top: 3rem; margin-bottom: 1rem;">Algorithm Selection Logic</h3>
             <div class="code-container">
                 <pre><code class="language-c">// Dynamic algorithm selection
@@ -460,9 +469,9 @@ if (pattern_len < 3) {
 } else {
     // Use SIMD or Boyer-Moore for medium length patterns
     #ifdef __AVX2__
-        match_count = avx2_search(...);
+        match_count = simd_avx2_search(...);
     #elif defined(__SSE4_2__)
-        match_count = simd_search(...);
+        match_count = simd_sse42_search(...);
     #else
         match_count = boyer_moore_search(...);
     #endif
@@ -470,15 +479,15 @@ if (pattern_len < 3) {
             </div>
         </div>
     </section>
-    
+
     <section id="performance" class="performance-section">
         <div class="container">
             <h2 class="section-title">Performance</h2>
-            
+
             <p style="text-align: center; margin-bottom: 3rem;">
                 krep consistently outperforms traditional search tools across various file sizes and search patterns.
             </p>
-            
+
             <div class="charts">
                 <div>
                     <h3 style="margin-bottom: 1.5rem; text-align: center;">Performance Comparison</h3>
@@ -516,7 +525,7 @@ if (pattern_len < 3) {
                         Searching a 1GB text file for a common pattern
                     </p>
                 </div>
-                
+
                 <div>
                     <h3 style="margin-bottom: 1.5rem; text-align: center;">Algorithm Performance by Pattern Length</h3>
                     <div class="chart-container" id="performance-chart">
@@ -524,20 +533,21 @@ if (pattern_len < 3) {
                     </div>
                 </div>
             </div>
-            
+
             <div style="margin-top: 4rem; text-align: center;">
                 <p style="max-width: 700px; margin: 0 auto;">
-                    krep's performance advantages are particularly noticeable when processing large files on modern multi-core systems, 
+                    krep's performance advantages are particularly noticeable when processing large files on modern
+                    multi-core systems,
                     where it can fully leverage hardware capabilities and parallel processing.
                 </p>
             </div>
         </div>
     </section>
-    
+
     <section id="installation" class="installation-section">
         <div class="container">
             <h2 class="section-title">Installation</h2>
-            
+
             <div class="installation-steps">
                 <div class="step">
                     <h3>Clone the Repository</h3>
@@ -546,21 +556,21 @@ if (pattern_len < 3) {
 cd krep</code></pre>
                     </div>
                 </div>
-                
+
                 <div class="step">
                     <h3>Build</h3>
                     <div class="code-container">
                         <pre><code class="language-bash">make</code></pre>
                     </div>
                 </div>
-                
+
                 <div class="step">
                     <h3>Install</h3>
                     <div class="code-container">
                         <pre><code class="language-bash">sudo make install</code></pre>
                     </div>
                 </div>
-                
+
                 <div class="step">
                     <h3>Prerequisites</h3>
                     <ul style="list-style: none;">
@@ -572,7 +582,7 @@ cd krep</code></pre>
             </div>
         </div>
     </section>
-    
+
     <footer>
         <div class="social-links">
             <a href="https://github.com/davidesantangelo/krep" class="social-link">
@@ -595,11 +605,11 @@ cd krep</code></pre>
         // Syntax highlighting
         document.addEventListener('DOMContentLoaded', () => {
             hljs.highlightAll();
-            
+
             // Rendering the performance chart
             const ctx = document.createElement('canvas');
             document.getElementById('performance-chart').appendChild(ctx);
-            
+
             new Chart(ctx, {
                 type: 'line',
                 data: {
@@ -680,17 +690,17 @@ cd krep</code></pre>
                 }
             });
         });
-        
+
         // Particle animation for header
         const canvas = document.getElementById('particles');
         const ctx = canvas.getContext('2d');
-        
+
         canvas.width = window.innerWidth;
         canvas.height = window.innerHeight;
-        
+
         const particles = [];
         const particleCount = 50;
-        
+
         for (let i = 0; i < particleCount; i++) {
             particles.push({
                 x: Math.random() * canvas.width,
@@ -701,32 +711,32 @@ cd krep</code></pre>
                 opacity: Math.random() * 0.5 + 0.1
             });
         }
-        
+
         function animateParticles() {
             ctx.clearRect(0, 0, canvas.width, canvas.height);
-            
+
             for (let i = 0; i < particles.length; i++) {
                 const p = particles[i];
-                
+
                 ctx.beginPath();
                 ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
                 ctx.fillStyle = `rgba(255, 255, 255, ${p.opacity})`;
                 ctx.fill();
-                
+
                 p.x += p.speedX;
                 p.y += p.speedY;
-                
+
                 // Bounce off edges
                 if (p.x < 0 || p.x > canvas.width) p.speedX *= -1;
                 if (p.y < 0 || p.y > canvas.height) p.speedY *= -1;
-                
+
                 // Connect particles that are close to each other
                 for (let j = i + 1; j < particles.length; j++) {
                     const p2 = particles[j];
                     const dx = p.x - p2.x;
                     const dy = p.y - p2.y;
                     const distance = Math.sqrt(dx * dx + dy * dy);
-                    
+
                     if (distance < 150) {
                         ctx.beginPath();
                         ctx.strokeStyle = `rgba(255, 255, 255, ${0.2 * (1 - distance / 150)})`;
@@ -737,16 +747,17 @@ cd krep</code></pre>
                     }
                 }
             }
-            
+
             requestAnimationFrame(animateParticles);
         }
-        
+
         animateParticles();
-        
+
         window.addEventListener('resize', () => {
             canvas.width = window.innerWidth;
             canvas.height = window.innerHeight;
         });
     </script>
 </body>
+
 </html>

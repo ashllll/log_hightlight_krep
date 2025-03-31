@@ -1,6 +1,6 @@
 # krep - A high-performance string search utility
 
-![Version](https://img.shields.io/badge/version-0.2.1-blue)
+![Version](https://img.shields.io/badge/version-0.2.2-blue)
 ![License](https://img.shields.io/badge/license-BSD-green)
 
 `krep` is a blazingly fast string search utility designed for performance-critical applications. It implements multiple optimized search algorithms and leverages modern hardware capabilities to deliver maximum throughput.
@@ -13,21 +13,21 @@ https://dev.to/daviducolo/introducing-krep-building-a-high-performance-string-se
 
 ## Features
 
-- **Multiple optimized search algorithms**
-  - Boyer-Moore-Horspool algorithm for general-purpose efficient pattern matching
-  - Knuth-Morris-Pratt (KMP) algorithm optimized for short patterns
-  - Rabin-Karp algorithm for longer pattern lengths
-  - SIMD acceleration on compatible hardware (SSE4.2, AVX2, and ARM NEON)
-
-- **Maximum performance**
-  - Memory-mapped file I/O for optimal throughput
-  - Multi-threaded parallel search for large files
-  - Automatic algorithm selection based on pattern characteristics and hardware capabilities
-
-- **Flexible search options**
-  - Case-sensitive and case-insensitive matching
-  - Direct string search in addition to file search
-  - Match counting mode
+- **Multiple optimized search algorithms:**
+  - Boyer-Moore-Horspool algorithm for general-purpose efficient pattern matching.
+  - Knuth-Morris-Pratt (KMP) algorithm optimized for very short patterns.
+  - Rabin-Karp algorithm suitable for longer patterns.
+- **SIMD acceleration:**
+  - Basic SSE4.2 implementation (`simd_sse42_search()`) for patterns up to 16 bytes (case-sensitive).
+  - Placeholders and fallbacks for AVX2 and ARM NEON (implementation planned).
+- **Maximum performance:**
+  - Memory-mapped file I/O (`mmap`) for optimal throughput.
+  - Multi-threaded parallel search for large files (adaptive thread count).
+  - Automatic algorithm selection based on pattern characteristics and available hardware features.
+- **Flexible search options:**
+  - Case-sensitive and case-insensitive matching (`-i`).
+  - Direct string search (`-s`) in addition to file search.
+  - Match counting mode (`-c`).
 
 ## Installation
 
