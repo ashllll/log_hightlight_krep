@@ -567,6 +567,10 @@ uint64_t simd_sse42_search(const char *text, size_t text_len,
             {
                 match_count++;
             }
+            // FIX: Advance position past the *end* of the found match
+            // This avoids potential overcounting issues from the previous (index + 1) logic
+            // when multiple matches could start within the same 16-byte window before advancing.
+            // It focuses on finding distinct matches efficiently.
             current_pos += (index + pattern_len);
         }
         else
@@ -1207,4 +1211,85 @@ int main(int argc, char *argv[])
 
     return result; // 0 on success, non-zero on error
 }
+#endif // TESTING
+
+/* --- TESTING COMPATIBILITY WRAPPERS --- */
+#ifdef TESTING
+
+// Compatibility wrapper for Boyer-Moore
+uint64_t boyer_moore_search_compat(const char *text, size_t text_len,
+                                   const char *pattern, size_t pattern_len,
+                                   bool case_sensitive)
+{
+    // Call the actual 6-parameter function with SIZE_MAX limit
+    return boyer_moore_search(text, text_len, pattern, pattern_len,
+                              case_sensitive, SIZE_MAX);
+}
+
+// Compatibility wrapper for KMP
+uint64_t kmp_search_compat(const char *text, size_t text_len,
+                           const char *pattern, size_t pattern_len,
+                           bool case_sensitive)
+{
+    return kmp_search(text, text_len, pattern, pattern_len,
+                      case_sensitive, SIZE_MAX);
+}
+
+// Compatibility wrapper for Rabin-Karp
+uint64_t rabin_karp_search_compat(const char *text, size_t text_len,
+                                  const char *pattern, size_t pattern_len,
+                                  bool case_sensitive)
+{
+    return rabin_karp_search(text, text_len, pattern, pattern_len,
+                             case_sensitive, SIZE_MAX);
+}
+
+#ifdef __SSE4_2__
+// Compatibility wrapper for SSE4.2
+uint64_t simd_sse42_search_compat(const char *text, size_t text_len,
+                                  const char *pattern, size_t pattern_len,
+                                  bool case_sensitive)
+{
+    return simd_sse42_search(text, text_len, pattern, pattern_len,
+                             case_sensitive, SIZE_MAX);
+}
+#endif
+
+#ifdef __AVX2__
+// Compatibility wrapper for AVX2
+uint64_t simd_avx2_search_compat(const char *text, size_t text_len,
+                                 const char *pattern, size_t pattern_len,
+                                 bool case_sensitive)
+{
+    return simd_avx2_search(text, text_len, pattern, pattern_len,
+                            case_sensitive, SIZE_MAX);
+}
+#endif
+
+#ifdef __ARM_NEON
+// Compatibility wrapper for NEON
+uint64_t neon_search_compat(const char *text, size_t text_len,
+                            const char *pattern, size_t pattern_len,
+                            bool case_sensitive)
+{
+    return neon_search(text, text_len, pattern, pattern_len,
+                       case_sensitive, SIZE_MAX);
+}
+#endif
+
+// Define aliases - this makes existing test code work without modifications
+// These MUST be active when compiling krep.c for the tests (using -DTESTING)
+#define boyer_moore_search boyer_moore_search_compat
+#define kmp_search kmp_search_compat
+#define rabin_karp_search rabin_karp_search_compat
+#ifdef __SSE4_2__
+#define simd_sse42_search simd_sse42_search_compat
+#endif
+#ifdef __AVX2__
+#define simd_avx2_search simd_avx2_search_compat
+#endif
+#ifdef __ARM_NEON
+#define neon_search neon_search_compat
+#endif
+
 #endif // TESTING
