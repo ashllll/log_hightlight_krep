@@ -18,8 +18,9 @@ https://dev.to/daviducolo/introducing-krep-building-a-high-performance-string-se
   - Knuth-Morris-Pratt (KMP) algorithm optimized for very short patterns.
   - Rabin-Karp algorithm suitable for longer patterns.
 - **SIMD acceleration:**
-  - Basic SSE4.2 implementation (`simd_sse42_search()`) for patterns up to 16 bytes (case-sensitive).
-  - Placeholders and fallbacks for AVX2 and ARM NEON (implementation planned).
+  - SSE4.2 implementation (currently falls back to Boyer-Moore)
+  - AVX2 support (placeholder with fallback)
+  - ARM NEON support (placeholder with fallback)
 - **Maximum performance:**
   - Memory-mapped file I/O (`mmap`) for optimal throughput.
   - Multi-threaded parallel search for large files (adaptive thread count).
@@ -134,8 +135,10 @@ This will compile and execute the test suite, which verifies:
 - Basic search functionality for all algorithms
 - Edge cases (empty strings, single characters)
 - Case sensitivity handling
-- Repeated pattern handling
-- Performance benchmarks
+- Performance benchmarking with large text files
+- Specific tests for SIMD implementations (when available)
+- Algorithm limit handling for multi-threaded use cases
+- Handling of pattern overlaps and matches at boundaries
 
 ### Example test output:
 
