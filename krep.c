@@ -567,12 +567,13 @@ uint64_t simd_sse42_search(const char *text, size_t text_len,
             {
                 match_count++;
             }
-            // Advance position past the start of the found match to find the next one.
-            current_pos += (index + 1);
+            current_pos += (index + pattern_len);
         }
         else
         {
-            current_pos++;
+            // No match found in this 16-byte block.
+            // Advance the search window using the optimized skip.
+            current_pos += (pattern_len <= 15) ? (16 - pattern_len + 1) : 1;
         }
     }
 
