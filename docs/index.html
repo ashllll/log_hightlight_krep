@@ -391,7 +391,8 @@
                         <i class="fas fa-microchip"></i>
                     </div>
                     <h3 class="feature-title">Hardware Acceleration</h3>
-                    <p>Automatically leverages SSE4.2 and AVX2 instructions when available for maximum throughput.</p>
+                    <p>Support for SSE4.2 and AVX2 instructions with intelligent fallbacks to ensure reliability across
+                        all systems.</p>
                 </div>
 
                 <div class="feature-card">
@@ -467,11 +468,11 @@ if (pattern_len < 3) {
     // Rabin-Karp works well for longer patterns
     match_count = rabin_karp_search(...);
 } else {
-    // Use SIMD or Boyer-Moore for medium length patterns
+    // Use SIMD (with fallback) or Boyer-Moore for medium length patterns
     #ifdef __AVX2__
-        match_count = simd_avx2_search(...);
+        match_count = simd_avx2_search(...);  // Currently falls back to Boyer-Moore
     #elif defined(__SSE4_2__)
-        match_count = simd_sse42_search(...);
+        match_count = simd_sse42_search(...); // Currently falls back to Boyer-Moore
     #else
         match_count = boyer_moore_search(...);
     #endif
