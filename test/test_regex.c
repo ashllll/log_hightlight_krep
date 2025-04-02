@@ -64,6 +64,13 @@ static uint64_t regex_search_wrapper(const char *text, size_t text_len,
                                      const char *pattern,
                                      bool case_sensitive, size_t report_limit_offset)
 {
+    // Special case: empty patterns aren't valid in POSIX regex
+    // Return 0 matches directly without attempting compilation
+    if (pattern == NULL || pattern[0] == '\0')
+    {
+        return 0;
+    }
+
     regex_t *compiled = compile_regex(pattern, case_sensitive);
     if (!compiled)
     {
