@@ -1,6 +1,6 @@
 # krep - A high-performance string search utility
 
-![Version](https://img.shields.io/badge/version-0.2.3-blue)
+![Version](https://img.shields.io/badge/version-0.3.0-blue)
 ![License](https://img.shields.io/badge/license-BSD-green)
 
 `krep` is a blazingly fast string search utility designed for performance-critical applications. It implements multiple optimized search algorithms and leverages modern hardware capabilities to deliver maximum throughput.
@@ -17,6 +17,9 @@ https://dev.to/daviducolo/introducing-krep-building-a-high-performance-string-se
   - Boyer-Moore-Horspool algorithm for general-purpose efficient pattern matching.
   - Knuth-Morris-Pratt (KMP) algorithm optimized for very short patterns.
   - Rabin-Karp algorithm suitable for longer patterns.
+- **Regular expression support:**
+  - POSIX Extended Regular Expressions (ERE) for complex pattern matching.
+  - Case-sensitive and case-insensitive regex matching.
 - **SIMD acceleration:**
   - SSE4.2 implementation (currently falls back to Boyer-Moore)
   - AVX2 support (placeholder with fallback)
@@ -65,6 +68,11 @@ Case-insensitive search with 8 threads:
 krep -i -t 8 "ERROR" large_logfile.log
 ```
 
+Search using a regular expression:
+```bash
+krep -r "[Ee]rror: .*" system.log
+```
+
 Count occurrences without displaying matching lines:
 ```bash
 krep -c "TODO" *.c
@@ -79,6 +87,7 @@ krep -s "Hello" "Hello world"
 
 - `-i` Case-insensitive search
 - `-c` Count matches only (don't print matching lines)
+- `-r` Treat PATTERN as a regular expression
 - `-t NUM` Use NUM threads (default: 4)
 - `-s STRING` Search within STRING instead of a file
 - `-v` Display version information

@@ -429,6 +429,15 @@
                     <h3 class="feature-title">Simple Interface</h3>
                     <p>Familiar command-line interface that's easy to use while providing powerful capabilities.</p>
                 </div>
+
+                <div class="feature-card">
+                    <div class="feature-icon">
+                        <i class="fas fa-search"></i>
+                    </div>
+                    <h3 class="feature-title">Regular Expression Support</h3>
+                    <p>Powerful POSIX regular expression matching for complex pattern searching with the same high
+                        performance.</p>
+                </div>
             </div>
         </div>
     </section>
@@ -449,6 +458,9 @@
                     <br>
                     <p><span class="highlight-comment"># Case-insensitive search with 8 threads</span></p>
                     <p>$ krep -i -t 8 "ERROR" large_logfile.log</p>
+                    <br>
+                    <p><span class="highlight-comment"># Regular expression search</span></p>
+                    <p>$ krep -r "[Ee]rror: .*" system.log</p>
                     <br>
                     <p><span class="highlight-comment"># Count occurrences only</span></p>
                     <p>$ krep -c "TODO" *.c</p>

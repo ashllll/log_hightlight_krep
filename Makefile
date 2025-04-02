@@ -1,6 +1,6 @@
 # krep - A high-performance string search utility
 # Author: Davide Santangelo
-# Version: 0.2.3
+# Version: 0.3.0
 
 PREFIX ?= /usr/local
 BINDIR = $(PREFIX)/bin
@@ -10,7 +10,7 @@ ENABLE_ARCH_DETECTION ?= 1
 
 CC = gcc
 CFLAGS = -Wall -Wextra -O3 -std=c11 -pthread -D_GNU_SOURCE -D_DEFAULT_SOURCE
-LDFLAGS =
+LDFLAGS = 
 
 # Architecture-specific optimizations
 ifeq ($(ENABLE_ARCH_DETECTION),1)
@@ -73,7 +73,7 @@ OBJ = $(SRC:.c=.o)
 EXEC = krep
 
 # Test files
-TEST_SRC = test/test_krep.c
+TEST_SRC = test/test_krep.c test/test_regex.c
 TEST_OBJ = $(TEST_SRC:.c=.o)
 TEST_EXEC = test_krep
 

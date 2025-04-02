@@ -9,7 +9,6 @@
 #include <time.h>
 #include <assert.h>
 #include <locale.h>
-// #include <wchar.h> // Not strictly needed for these tests
 #include <inttypes.h> // For PRIu64 format specifier
 #include <limits.h>   // For SIZE_MAX
 #include <unistd.h>   // For sleep (used in placeholder)
@@ -19,9 +18,11 @@
 #include "../krep.h"   // Assuming krep.h is in the parent directory
 #include "test_krep.h" // Include test header for consistency (if needed)
 
+void run_regex_tests(void);
+
 /* Test flags and counters */
-static int tests_passed = 0;
-static int tests_failed = 0;
+int tests_passed = 0; /* Remove 'static' to make these global */
+int tests_failed = 0; /* Remove 'static' to make these global */
 
 /**
  * Basic test assertion with reporting
@@ -534,6 +535,7 @@ int main(void)
 #endif
     test_report_limit();
     test_multithreading_placeholder();
+    run_regex_tests();
 
     // Calls to other tests assumed from previous context (provide dummies if needed)
     // test_repeated_patterns();
