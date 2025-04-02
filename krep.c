@@ -1,7 +1,7 @@
 /* krep - A high-performance string search utility
  *
  * Author: Davide Santangelo
- * Version: 0.3.1
+ * Version: 0.3.2
  * Year: 2025
  *
  * Features:
@@ -12,7 +12,7 @@
  * - Multi-threaded parallel search for large files
  * - Case-sensitive and case-insensitive matching
  * - Direct string search in addition to file search
- * - Regular expression search support (POSIX, compiled once)
+ * - Regular expression search support (POSIX, compiled once, fixed loop)
  */
 
 #include <stdio.h>
@@ -52,7 +52,7 @@ const size_t SIMD_MAX_LEN_AVX2 = 32;
 #define DEFAULT_THREAD_COUNT 4
 #define MIN_FILE_SIZE_FOR_THREADS (1 * 1024 * 1024) // 1MB minimum for threading
 #define CHUNK_SIZE (16 * 1024 * 1024)               // 16MB base chunk size (adjust based on L3 cache?)
-#define VERSION "0.3.1"                             // Updated version
+#define VERSION "0.3.2"                             // Updated version
 
 // --- Global lookup table for fast lowercasing ---
 static unsigned char lower_table[256];
@@ -181,6 +181,7 @@ void print_matching_lines(const char *text, size_t text_len, const match_result_
 
         size_t match_pos = result->positions[i].start_offset;
         size_t line_start = find_line_start(text, match_pos);
+        // Ensure line_end doesn't go past text_len, find_line_end handles this
         size_t line_end = find_line_end(text, text_len, match_pos);
 
         // Print the matching line safely
@@ -655,9 +656,10 @@ uint64_t neon_search(const char *text, size_t text_len,
 /**
  * Regex-based search implementation using a pre-compiled POSIX regex.
  * Takes a pointer to a compiled regex_t object.
+ * FIX: Corrected advancement logic to handle subsequent matches properly.
  */
 uint64_t regex_search(const char *text, size_t text_len,
-                      const regex_t *compiled_regex, // Changed parameter
+                      const regex_t *compiled_regex,
                       size_t report_limit_offset,
                       bool track_positions,
                       match_result_t *result)
@@ -669,100 +671,76 @@ uint64_t regex_search(const char *text, size_t text_len,
     if (!compiled_regex || text_len == 0 || report_limit_offset == 0)
         return 0;
 
-    // Search for the pattern using the pre-compiled regex
     const char *search_start = text;
-    size_t offset = 0;           // Offset from the original text start
-    size_t remaining = text_len; // Remaining text length from search_start
+    size_t current_offset = 0; // Offset from original text start to search_start
 
     // Loop while matches are found within the text bounds
-    // REG_NOTBOL: The first character is not the beginning of a line (^ won't match unless REG_NEWLINE is set)
-    // REG_NOTEOL: The last character is not the end of a line ($ won't match unless REG_NEWLINE is set)
-    // We apply these flags after the first iteration.
     int exec_flags = 0;
-    while (offset < text_len && // Ensure we don't search past the end
-           remaining > 0 &&     // Ensure there's text left to search
-           regexec(compiled_regex, search_start, 1, &match, exec_flags) == 0)
+    while (regexec(compiled_regex, search_start, 1, &match, exec_flags) == 0)
     {
-        // Check for valid match offsets before proceeding
-        if (match.rm_so < 0 || match.rm_eo < 0 || match.rm_so > (regoff_t)remaining || match.rm_eo > (regoff_t)remaining)
-        {
-            // Invalid match offsets returned by regexec, should not happen but handle defensively
-            fprintf(stderr, "Warning: Invalid offsets returned by regexec: so=%lld, eo=%lld\n", (long long)match.rm_so, (long long)match.rm_eo);
-            // Advance by 1 to avoid potential infinite loop on invalid zero-length match scenario
-            if (remaining > 0)
-            {
-                search_start++;
-                offset++;
-                remaining--;
-                exec_flags = REG_NOTBOL | REG_NOTEOL;
-            }
-            else
-            {
-                break; // No more text
-            }
-            continue;
-        }
+        // Calculate absolute offsets
+        size_t match_start_abs = current_offset + match.rm_so;
+        size_t match_end_abs = current_offset + match.rm_eo;
 
-        // Calculate the absolute start position of this match
-        size_t match_start_abs = offset + match.rm_so;
-        size_t match_end_abs = offset + match.rm_eo;
-
-        // Check if the match starts *before* the reporting limit for this chunk
+        // Check if the match starts *before* the reporting limit
         if (match_start_abs < report_limit_offset)
         {
             match_count++;
-
-            // Track match positions if requested
             if (track_positions && result)
             {
                 if (!match_result_add(result, match_start_abs, match_end_abs))
                 {
                     fprintf(stderr, "Warning: Failed to add match position, results may be incomplete.\n");
-                    // Decide whether to continue counting or stop
+                    // Optionally break or handle memory exhaustion
                 }
             }
         }
         else
         {
-            // Match starts at or after the limit, stop searching this chunk
+            // Match starts at or after the limit for this chunk/call
             break;
         }
 
-        // --- Advance the search pointer ---
-        regoff_t advance_bytes;
-        if (match.rm_eo == match.rm_so)
+        // --- Corrected Advancement Logic ---
+        regoff_t advance_offset_in_chunk = match.rm_eo; // Default: advance past the current match
+
+        // Crucial fix for zero-length matches:
+        // If the match was zero-length (rm_so == rm_eo) AND
+        // it occurred exactly at the start of the current search buffer (rm_so == 0),
+        // we must advance by at least one character to avoid an infinite loop.
+        if (match.rm_so == match.rm_eo && match.rm_so == 0)
         {
-            // Zero-length match found. Advance by one character past the start
-            // of the match to avoid infinite loops on patterns like `a*` matching empty strings.
-            advance_bytes = match.rm_so + 1;
+            advance_offset_in_chunk = 1;
         }
-        else
+        // Also handle the case where rm_eo somehow is not > rm_so, force advance by 1
+        // This also covers the zero-length match case where rm_so > 0.
+        else if (advance_offset_in_chunk <= match.rm_so)
         {
-            // Normal match, advance to the end of the match.
-            advance_bytes = match.rm_eo;
+            advance_offset_in_chunk = match.rm_so + 1;
         }
 
-        // Ensure we don't advance past the end of the remaining text
-        if ((size_t)advance_bytes > remaining)
+        // Ensure advancement doesn't exceed remaining text length relative to search_start
+        size_t remaining_len = text_len - current_offset;
+        if ((size_t)advance_offset_in_chunk > remaining_len)
         {
             break; // Cannot advance further
         }
 
-        search_start += advance_bytes;
-        offset += advance_bytes;
-        remaining -= advance_bytes;
+        // Advance pointers and offsets
+        search_start += advance_offset_in_chunk;
+        current_offset += advance_offset_in_chunk;
 
-        // After the first character, ^ and $ should not match BOL/EOL unless REG_NEWLINE was used
+        // After the first iteration, don't match ^ at BOL or $ at EOL
+        // unless REG_NEWLINE was specified during regcomp.
         exec_flags = REG_NOTBOL | REG_NOTEOL;
 
-        // Break if no text remains (redundant due to outer loop condition, but safe)
-        if (remaining == 0)
+        // Optimization: if search_start reached end, break early
+        if (current_offset >= text_len)
         {
             break;
         }
     }
 
-    // No need to call regfree here, it's managed externally
     return match_count;
 }
 
@@ -1015,7 +993,16 @@ int search_string(const char *pattern, size_t pattern_len, const char *text, boo
             print_matching_lines(text, text_len, matches);
         }
         // Print summary details
-        printf("Found %" PRIu64 " matches\n", match_count);
+        // Only print count summary if lines were not printed or if count is zero
+        if (!matches || match_count == 0)
+        {
+            printf("Found %" PRIu64 " matches\n", match_count);
+        }
+        else
+        {
+            printf("--- Total Matches: %" PRIu64 " ---\n", match_count);
+        }
+
         printf("Search completed in %.4f seconds\n", search_time);
         printf("Search details:\n");
         printf("  - String length: %zu characters\n", text_len);
@@ -1401,7 +1388,7 @@ int search_file(const char *filename, const char *pattern, size_t pattern_len, b
             else
             {
                 // Only print this summary line if lines weren't printed
-                if (!matches)
+                if (!matches || total_match_count == 0) // Also print if no matches were found
                 {
                     printf("Found %" PRIu64 " matches in '%s'\n", total_match_count, filename);
                 }
@@ -1634,4 +1621,4 @@ uint64_t neon_search_compat(const char *text, size_t text_len, const char *patte
 #define neon_search neon_search_compat
 #endif
 
-#endif // TESTING
+#endif
