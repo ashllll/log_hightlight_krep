@@ -22,9 +22,9 @@ uint64_t rabin_karp_search(const char *text, size_t text_len,
                            bool case_sensitive, size_t report_limit_offset);
 
 #ifdef __SSE4_2__
-uint64_t simd_search(const char *text, size_t text_len,
-                     const char *pattern, size_t pattern_len,
-                     bool case_sensitive, size_t report_limit_offset);
+uint64_t simd_sse42_search(const char *text, size_t text_len,
+                           const char *pattern, size_t pattern_len,
+                           bool case_sensitive, size_t report_limit_offset);
 #endif
 
 #ifdef __AVX2__
