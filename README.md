@@ -86,7 +86,8 @@ krep -s "Hello" "Hello world"
 
 Search for 'c' in the LICENSE file with line printing:
 ```bash
-krep 'c' LICENSE        
+krep 'c' LICENSE
+Warning: Line printing forces single-threaded mode (-t ignored).
 LICENSE:BSD 2-Clause License
 LICENSE:Copyright (c) 2025, Davide Santangelo
 LICENSE:Redistribution and use in source and binary forms, with or without
@@ -96,7 +97,7 @@ LICENSE:   list of conditions and the following disclaimer.
 LICENSE:2. Redistributions in binary form must reproduce the above copyright notice,
 LICENSE:   this list of conditions and the following disclaimer in the documentation
 --- Total Matches: 17 ---
-Search completed in 0.0005 seconds (2.55 MB/s)
+Search completed in 0.0004 seconds (3.00 MB/s)
 Search details:
   - File size: 0.00 MB (1306 bytes)
   - Pattern length: 1 characters
