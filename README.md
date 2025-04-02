@@ -1,6 +1,6 @@
 # krep - A high-performance string search utility
 
-![Version](https://img.shields.io/badge/version-0.3.0-blue)
+![Version](https://img.shields.io/badge/version-0.3.1-blue)
 ![License](https://img.shields.io/badge/license-BSD-green)
 
 `krep` is a blazingly fast string search utility designed for performance-critical applications. It implements multiple optimized search algorithms and leverages modern hardware capabilities to deliver maximum throughput.
@@ -25,13 +25,14 @@ https://dev.to/daviducolo/introducing-krep-building-a-high-performance-string-se
   - AVX2 support (placeholder with fallback)
   - ARM NEON support (placeholder with fallback)
 - **Maximum performance:**
-  - Memory-mapped file I/O (`mmap`) for optimal throughput.
+  - Memory-mapped file I/O (`mmap`) with optimized flags (`MAP_POPULATE` removed, relies on `MADV_SEQUENTIAL`) for potentially better throughput on large sequential reads.
   - Multi-threaded parallel search for large files (adaptive thread count).
   - Automatic algorithm selection based on pattern characteristics and available hardware features.
 - **Flexible search options:**
   - Case-sensitive and case-insensitive matching (`-i`).
   - Direct string search (`-s`) in addition to file search.
   - Match counting mode (`-c`).
+  - Match line printing (currently implemented for single-threaded regex search; non-regex and multi-threaded line printing is not yet implemented).
 
 ## Installation
 
@@ -125,11 +126,11 @@ Performance compared to standard tools (searching a 1GB text file for a common p
    - Boyer-Moore for medium-length patterns (when SIMD is unavailable)
    - Rabin-Karp for longer patterns (> 16 characters)
 
-2. **Parallelization strategy**: For files larger than 1MB, splits the search into chunks and processes them concurrently
+2. **Parallelization strategy**: For files larger than a dynamic threshold (`MIN_FILE_SIZE_FOR_THREADS` * thread_count), splits the search into chunks and processes them concurrently using pthreads. Thread count is adapted based on core count and workload.
 
-3. **Memory efficiency**: Uses memory-mapped I/O to leverage the operating system's page cache
+3. **Memory efficiency**: Uses memory-mapped I/O (`mmap` with `MAP_PRIVATE` and `MADV_SEQUENTIAL`) to leverage the operating system's page cache efficiently for sequential reads.
 
-4. **Hardware acceleration**: Automatically detects and utilizes SSE4.2, AVX2 and ARM Neon instructions when available
+4. **Hardware acceleration**: Detects availability of SSE4.2, AVX2 and ARM Neon instructions at compile time (though full SIMD implementations are currently placeholders/fallbacks).
 
 ## Testing
 
