@@ -1,6 +1,6 @@
 # krep - A high-performance string search utility
 
-![Version](https://img.shields.io/badge/version-0.3.2-blue)
+![Version](https://img.shields.io/badge/version-0.3.3-blue)
 ![License](https://img.shields.io/badge/license-BSD-green)
 
 `krep` is a blazingly fast string search utility designed for performance-critical applications. It implements multiple optimized search algorithms and leverages modern hardware capabilities to deliver maximum throughput.
@@ -82,6 +82,29 @@ krep -c "TODO" *.c
 Search within a string instead of a file:
 ```bash
 krep -s "Hello" "Hello world"
+```
+
+Search for 'c' in the LICENSE file with line printing:
+```bash
+krep 'c' LICENSE        
+LICENSE:BSD 2-Clause License
+LICENSE:Copyright (c) 2025, Davide Santangelo
+LICENSE:Redistribution and use in source and binary forms, with or without
+LICENSE:modification, are permitted provided that the following conditions are met:
+LICENSE:1. Redistributions of source code must retain the above copyright notice, this
+LICENSE:   list of conditions and the following disclaimer.
+LICENSE:2. Redistributions in binary form must reproduce the above copyright notice,
+LICENSE:   this list of conditions and the following disclaimer in the documentation
+--- Total Matches: 17 ---
+Search completed in 0.0005 seconds (2.55 MB/s)
+Search details:
+  - File size: 0.00 MB (1306 bytes)
+  - Pattern length: 1 characters
+  - Pattern type: Literal text
+  - Execution: Single-threaded (1 thread)
+  - Algorithm used: KMP
+  - SIMD Available: NEON (Using Fallback)
+  - Case-sensitive search
 ```
 
 ## Command Line Options

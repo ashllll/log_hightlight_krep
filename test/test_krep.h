@@ -10,34 +10,17 @@
 #include <stdlib.h>
 #include <limits.h> // For SIZE_MAX
 
-/* Function declarations from krep.c that we need for testing */
-uint64_t boyer_moore_search(const char *text, size_t text_len,
-                            const char *pattern, size_t pattern_len,
-                            bool case_sensitive, size_t report_limit_offset);
-uint64_t kmp_search(const char *text, size_t text_len,
-                    const char *pattern, size_t pattern_len,
-                    bool case_sensitive, size_t report_limit_offset);
-uint64_t rabin_karp_search(const char *text, size_t text_len,
-                           const char *pattern, size_t pattern_len,
-                           bool case_sensitive, size_t report_limit_offset);
-
-#ifdef __SSE4_2__
-uint64_t simd_sse42_search(const char *text, size_t text_len,
-                           const char *pattern, size_t pattern_len,
-                           bool case_sensitive, size_t report_limit_offset);
+/* Define TESTING to enable the compatibility wrappers */
+#ifndef TESTING
+#define TESTING
 #endif
 
-#ifdef __AVX2__
-uint64_t avx2_search(const char *text, size_t text_len,
-                     const char *pattern, size_t pattern_len,
-                     bool case_sensitive, size_t report_limit_offset);
-#endif
-
-#ifdef __ARM_NEON
-uint64_t neon_search(const char *text, size_t text_len,
-                     const char *pattern, size_t pattern_len,
-                     bool case_sensitive, size_t report_limit_offset);
-#endif
+/*
+ * Note: We're NOT redefining the search functions here to avoid conflicts.
+ * Instead, we'll use the compatibility wrappers defined in krep.c via the
+ * TESTING define above, which will map the 6-parameter calls to the full
+ * 8-parameter implementations.
+ */
 
 /**
  * @brief Regex-based search using POSIX regular expressions.

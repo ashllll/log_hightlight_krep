@@ -11,6 +11,7 @@
 #include <regex.h>
 #include <inttypes.h> // Add this include for PRIu64 format specifier
 #include "../krep.h"
+#include "test_compat.h" // Add this include to get the compatibility wrappers
 
 /* External test counter references */
 extern int tests_passed;
@@ -296,9 +297,7 @@ void test_regex_report_limit(void)
                 "Regex counts 0 'apple' with limit at first match");
 }
 
-/**
- * Test regex vs literal string search performance
- */
+/* Test regex vs literal string search performance */
 void test_regex_vs_literal_performance(void)
 {
     printf("\n=== Regex vs. Literal Performance Tests ===\n");

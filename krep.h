@@ -2,7 +2,7 @@
  * Header file for krep - A high-performance string search utility
  *
  * Author: Davide Santangelo
- * Version: 0.3.2
+ * Version: 0.3.3
  * Year: 2025
  */
 
@@ -13,6 +13,13 @@
 #include <stdbool.h>
 #include <stddef.h> // For size_t
 #include <regex.h>  // Needed for regex_t type
+
+/* --- ANSI Color Codes --- */
+// Define these here or ensure they are defined before use in print_matching_lines if called externally
+#define KREP_COLOR_MATCH "\033[1;31m" // Bold Red
+#define KREP_COLOR_RESET "\033[0m"
+#define KREP_COLOR_FILENAME "\033[35m"  // Magenta for filename
+#define KREP_COLOR_SEPARATOR "\033[36m" // Cyan for separator (:)
 
 /* --- Match tracking structure --- */
 typedef struct
@@ -38,7 +45,7 @@ typedef struct
  * @param pattern_len The length of the pattern (used for non-regex).
  * @param case_sensitive If true, perform case-sensitive search; otherwise, case-insensitive.
  * @param count_only If true, only print the total count of matches to stdout.
- * @param thread_count Requested number of threads (0 or negative for default, adjusted automatically).
+ * @param thread_count Requested number of threads (0 or negative for default, adjusted automatically). Line printing currently forces single-thread.
  * @param use_regex If true, treat the pattern as an extended POSIX regular expression.
  * @return 0 on success, non-zero on error. Match count or lines are printed to stdout.
  */
@@ -86,42 +93,65 @@ bool match_result_add(match_result_t *result, size_t start_offset, size_t end_of
 void match_result_free(match_result_t *result);
 
 /**
- * @brief Print lines containing matches based on the positions stored in the result structure.
+ * @brief Print lines containing matches based on the positions stored in the result structure, with optional filename and highlighting.
  *
+ * @param filename Optional filename prefix to print for each line (e.g., "file.txt:"). Pass NULL if not needed.
  * @param text The original text buffer that was searched.
  * @param text_len Length of the text buffer.
  * @param result Pointer to the match_result_t structure containing match positions.
  */
-void print_matching_lines(const char *text, size_t text_len, const match_result_t *result);
+void print_matching_lines(const char *filename, const char *text, size_t text_len, const match_result_t *result);
+
+/**
+ * @brief Print program usage information.
+ *
+ * @param program_name The name of the program (typically argv[0]).
+ */
+void print_usage(const char *program_name);
 
 /* --- Internal Search Algorithm Declarations (Exposed for potential direct use/testing) --- */
-/* Note: These functions now include a report_limit_offset parameter. Matches starting
-   at or after this offset (relative to the start of 'text') are NOT counted by that specific call.
-   This is primarily used for multi-threading to avoid double-counting matches at chunk boundaries. */
+/* Note: These functions now include parameters for position tracking. */
 
 /**
  * @brief Boyer-Moore-Horspool search algorithm implementation.
- * Counts matches starting before report_limit_offset.
+ * Counts matches starting before report_limit_offset. Optionally tracks positions.
+ *
+ * @param text Text buffer to search.
+ * @param text_len Length of text buffer.
+ * @param pattern Pattern to search for.
+ * @param pattern_len Length of pattern.
+ * @param case_sensitive Case sensitivity flag.
+ * @param report_limit_offset Offset limit for counting matches.
+ * @param track_positions If true, store match positions in result.
+ * @param result Pointer to initialized match_result_t structure (required if track_positions is true).
+ * @return uint64_t Match count.
  */
 uint64_t boyer_moore_search(const char *text, size_t text_len,
                             const char *pattern, size_t pattern_len,
-                            bool case_sensitive, size_t report_limit_offset);
+                            bool case_sensitive, size_t report_limit_offset,
+                            bool track_positions, match_result_t *result);
 
 /**
  * @brief Knuth-Morris-Pratt (KMP) search algorithm implementation.
- * Counts matches starting before report_limit_offset.
+ * Counts matches starting before report_limit_offset. Optionally tracks positions.
+ * (Parameters same as boyer_moore_search)
+ * @return uint64_t Match count.
  */
 uint64_t kmp_search(const char *text, size_t text_len,
                     const char *pattern, size_t pattern_len,
-                    bool case_sensitive, size_t report_limit_offset);
+                    bool case_sensitive, size_t report_limit_offset,
+                    bool track_positions, match_result_t *result);
 
 /**
  * @brief Rabin-Karp search algorithm implementation.
- * Counts matches starting before report_limit_offset.
+ * Counts matches starting before report_limit_offset. Optionally tracks positions.
+ * (Parameters same as boyer_moore_search)
+ * @return uint64_t Match count.
  */
 uint64_t rabin_karp_search(const char *text, size_t text_len,
                            const char *pattern, size_t pattern_len,
-                           bool case_sensitive, size_t report_limit_offset);
+                           bool case_sensitive, size_t report_limit_offset,
+                           bool track_positions, match_result_t *result);
 
 /**
  * @brief Regex-based search using a pre-compiled POSIX regex.
@@ -145,31 +175,40 @@ uint64_t regex_search(const char *text, size_t text_len,
 #ifdef __SSE4_2__
 /**
  * @brief SIMD-accelerated search using SSE4.2 intrinsics (e.g., PCMPESTRI). (Fallback)
- * Counts matches starting before report_limit_offset.
+ * Counts matches starting before report_limit_offset. Optionally tracks positions.
+ * (Parameters same as boyer_moore_search)
+ * @return uint64_t Match count.
  */
 uint64_t simd_sse42_search(const char *text, size_t text_len,
                            const char *pattern, size_t pattern_len,
-                           bool case_sensitive, size_t report_limit_offset);
+                           bool case_sensitive, size_t report_limit_offset,
+                           bool track_positions, match_result_t *result);
 #endif
 
 #ifdef __AVX2__
 /**
  * @brief SIMD-accelerated search using AVX2 intrinsics. (Fallback)
- * Counts matches starting before report_limit_offset.
+ * Counts matches starting before report_limit_offset. Optionally tracks positions.
+ * (Parameters same as boyer_moore_search)
+ * @return uint64_t Match count.
  */
 uint64_t simd_avx2_search(const char *text, size_t text_len,
                           const char *pattern, size_t pattern_len,
-                          bool case_sensitive, size_t report_limit_offset);
+                          bool case_sensitive, size_t report_limit_offset,
+                          bool track_positions, match_result_t *result);
 #endif
 
 #ifdef __ARM_NEON // Placeholder for potential NEON implementation
 /**
  * @brief SIMD-accelerated search using ARM NEON intrinsics. (Fallback)
- * Counts matches starting before report_limit_offset.
+ * Counts matches starting before report_limit_offset. Optionally tracks positions.
+ * (Parameters same as boyer_moore_search)
+ * @return uint64_t Match count.
  */
 uint64_t neon_search(const char *text, size_t text_len,
                      const char *pattern, size_t pattern_len,
-                     bool case_sensitive, size_t report_limit_offset);
+                     bool case_sensitive, size_t report_limit_offset,
+                     bool track_positions, match_result_t *result);
 #endif
 
 #endif /* KREP_H */

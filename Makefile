@@ -1,6 +1,6 @@
 # krep - A high-performance string search utility
 # Author: Davide Santangelo
-# Version: 0.3.2
+# Version: 0.3.3
 
 PREFIX ?= /usr/local
 BINDIR = $(PREFIX)/bin
@@ -85,15 +85,11 @@ $(EXEC): $(OBJ)
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
-# Test target
-test: $(TEST_EXEC)
+# Fix test target to use proper variables
+test: CFLAGS += -DTESTING
+test: $(OBJ) $(TEST_OBJ) 
+	$(CC) $(CFLAGS) -o $(TEST_EXEC) $(TEST_OBJ) $(OBJ) $(LDFLAGS)
 	./$(TEST_EXEC)
-
-$(TEST_EXEC): $(TEST_OBJ) krep_test.o
-	$(CC) $(CFLAGS) -o $(TEST_EXEC) $(TEST_OBJ) krep_test.o $(LDFLAGS)
-
-krep_test.o: $(SRC)
-	$(CC) $(CFLAGS) -DTESTING -c $(SRC) -o krep_test.o
 
 clean:
 	rm -f $(OBJ) $(EXEC) $(TEST_OBJ) $(TEST_EXEC) krep_test.o

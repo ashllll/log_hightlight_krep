@@ -15,8 +15,9 @@
 
 /* Include main krep functions for testing */
 // TESTING is defined by the Makefile when building krep_test.o
-#include "../krep.h"   // Assuming krep.h is in the parent directory
-#include "test_krep.h" // Include test header for consistency (if needed)
+#include "../krep.h"     // Assuming krep.h is in the parent directory
+#include "test_krep.h"   // Include test header for consistency (if needed)
+#include "test_compat.h" // Add this include to get the compatibility wrappers
 
 void run_regex_tests(void);
 
