@@ -2,7 +2,7 @@
  * Header file for krep - A high-performance string search utility
  *
  * Author: Davide Santangelo
- * Version: 0.3.3
+ * Version: 0.3.4
  * Year: 2025
  */
 

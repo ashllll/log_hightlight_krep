@@ -500,6 +500,64 @@ void test_multithreading_placeholder(void)
     sleep(1); // Simulate work
 }
 
+/**
+ * Test for numeric pattern false positives
+ * This test specifically checks for the issue where lines without '11' are incorrectly matched
+ */
+void test_numeric_patterns(void)
+{
+    printf("\n=== Numeric Pattern False Positive Tests ===\n");
+
+    // Create a test string with numbered lines
+    const char *test_text =
+        "Line 1: text\n"
+        "Line 2: text\n"
+        // ...skip a few lines...
+        "Line 10: text\n"
+        "Line 11: text with 11 in content\n" // Should match due to '11' in content and line number
+        "Line 12: text\n"
+        // ...more lines...
+        "Line 120: text\n" // Should NOT match if searching for '11'
+        "Line 121: text\n" // Should NOT match if searching for '11'
+        "Line 122: text\n" // Should NOT match if searching for '11'
+        // ...more numbered lines...
+        "Line 129: text\n";
+
+    size_t test_len = strlen(test_text);
+    const char *pattern = "11";
+    size_t pattern_len = strlen(pattern);
+
+    // Test each algorithm to see if they match only lines with actual '11' in the content
+    uint64_t bm_count = boyer_moore_search(test_text, test_len, pattern, pattern_len, true, SIZE_MAX);
+    uint64_t kmp_count = kmp_search(test_text, test_len, pattern, pattern_len, true, SIZE_MAX);
+    uint64_t rk_count = rabin_karp_search(test_text, test_len, pattern, pattern_len, true, SIZE_MAX);
+
+    printf("Raw pattern search results for '11':\n");
+    printf("  Boyer-Moore: %" PRIu64 " matches\n", bm_count);
+    printf("  KMP: %" PRIu64 " matches\n", kmp_count);
+    printf("  Rabin-Karp: %" PRIu64 " matches\n", rk_count);
+
+    // Expected count should be 2: one for "Line 11" and one for the "11" in its content
+    const uint64_t expected_count = 2;
+    TEST_ASSERT(bm_count == expected_count, "Boyer-Moore correctly identifies only true '11' occurrences");
+    TEST_ASSERT(kmp_count == expected_count, "KMP correctly identifies only true '11' occurrences");
+    TEST_ASSERT(rk_count == expected_count, "Rabin-Karp correctly identifies only true '11' occurrences");
+
+    // Test if line 120, 121, etc. are being incorrectly matched
+    const char *line_120 = strstr(test_text, "Line 120:");
+    if (line_120)
+    {
+        bool bm_matches_120 = boyer_moore_search(line_120, strlen("Line 120: text"),
+                                                 pattern, pattern_len, true, SIZE_MAX) > 0;
+        TEST_ASSERT(!bm_matches_120, "Boyer-Moore should not match '11' in 'Line 120:'");
+
+        // Test specific hypothesis: could double-digit line numbers be confused with the pattern?
+        char line_num_str[4] = "120";
+        bool contains_11 = strstr(line_num_str, pattern) != NULL;
+        printf("Debug: Does '120' contain '11'? %s\n", contains_11 ? "Yes" : "No");
+    }
+}
+
 /* ========================================================================= */
 /* Main Test Runner                              */
 /* ========================================================================= */
@@ -528,7 +586,9 @@ int main(void)
     test_case_insensitive();
     test_performance();
 
-    // Add calls to new tests
+    // Add our new test to help diagnose the numeric pattern issue
+    test_numeric_patterns();
+
 #ifdef __SSE4_2__
     test_simd_specific();
 #else
