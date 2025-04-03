@@ -3,7 +3,7 @@
 ![Version](https://img.shields.io/badge/version-0.3.5-blue)
 ![License](https://img.shields.io/badge/license-BSD-green)
 
-`K(r)ep` is a blazingly fast string search utility designed for performance-critical applications. It implements multiple optimized search algorithms and leverages modern hardware capabilities to deliver maximum throughput.
+`Krep (krep)` is a blazingly fast string search utility designed for performance-critical applications. It implements multiple optimized search algorithms and leverages modern hardware capabilities to deliver maximum throughput.
 
 ![diagram](https://github.com/user-attachments/assets/6ea2ab4c-ef0e-4423-8481-2dcee1aba9e3)
 
