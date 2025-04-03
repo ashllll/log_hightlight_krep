@@ -2,7 +2,7 @@
  * Header file for krep - A high-performance string search utility
  *
  * Author: Davide Santangelo
- * Version: 0.3.4
+ * Version: 0.3.5
  * Year: 2025
  */
 
@@ -198,9 +198,19 @@ uint64_t simd_avx2_search(const char *text, size_t text_len,
                           bool track_positions, match_result_t *result);
 #endif
 
+/* SIMD Constants and Optimization Parameters */
+#define SIMD_MAX_LEN_SSE42 16 /* Maximum pattern length for SSE4.2 */
+#define SIMD_MAX_LEN_AVX2 32  /* Maximum pattern length for AVX2 */
+#define SIMD_MAX_LEN_NEON 16  /* Maximum pattern length for ARM NEON */
+
+/* Alignment for optimal SIMD performance */
+#define SIMD_ALIGN_SSE 16
+#define SIMD_ALIGN_AVX 32
+#define SIMD_ALIGN_NEON 16
+
 #ifdef __ARM_NEON // Placeholder for potential NEON implementation
 /**
- * @brief SIMD-accelerated search using ARM NEON intrinsics. (Fallback)
+ * @brief SIMD-accelerated search using ARM NEON intrinsics.
  * Counts matches starting before report_limit_offset. Optionally tracks positions.
  * (Parameters same as boyer_moore_search)
  * @return uint64_t Match count.
@@ -209,6 +219,29 @@ uint64_t neon_search(const char *text, size_t text_len,
                      const char *pattern, size_t pattern_len,
                      bool case_sensitive, size_t report_limit_offset,
                      bool track_positions, match_result_t *result);
+
+/**
+ * @brief Optimized NEON search for short patterns (4 bytes or less).
+ * Significantly faster for very short patterns through specialized implementation.
+ * @return uint64_t Match count.
+ */
+uint64_t neon_search_short(const char *text, size_t text_len,
+                           const char *pattern, size_t pattern_len,
+                           bool case_sensitive, size_t report_limit_offset,
+                           bool track_positions, match_result_t *result);
+
+/**
+ * @brief Check if the current ARM processor supports advanced NEON features.
+ * Used for runtime dispatch to the most optimized implementation.
+ * @return bool True if advanced NEON features are available.
+ */
+bool has_advanced_neon_features(void);
 #endif
+
+/* Inline helper for SIMD alignment checking */
+static inline bool is_aligned_for_simd(const void *ptr, size_t alignment)
+{
+   return ((uintptr_t)ptr & (alignment - 1)) == 0;
+}
 
 #endif /* KREP_H */

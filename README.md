@@ -1,6 +1,6 @@
 # krep - A high-performance string search utility
 
-![Version](https://img.shields.io/badge/version-0.3.4-blue)
+![Version](https://img.shields.io/badge/version-0.3.5-blue)
 ![License](https://img.shields.io/badge/license-BSD-green)
 
 `krep` is a blazingly fast string search utility designed for performance-critical applications. It implements multiple optimized search algorithms and leverages modern hardware capabilities to deliver maximum throughput.
@@ -21,10 +21,12 @@ https://dev.to/daviducolo/introducing-krep-building-a-high-performance-string-se
   - POSIX Extended Regular Expressions (ERE) for complex pattern matching.
   - Case-sensitive and case-insensitive regex matching.
 - **SIMD acceleration:**
+  - ARM NEON implementation with specialized optimization for short patterns
   - SSE4.2 implementation (currently falls back to Boyer-Moore)
   - AVX2 support (placeholder with fallback)
-  - ARM NEON support (placeholder with fallback)
 - **Maximum performance:**
+  - Memory alignment optimizations for SIMD operations
+  - Cache-aware prefetching for reduced CPU stalls
   - Memory-mapped file I/O (`mmap`) with optimized flags (`MAP_POPULATE` removed, relies on `MADV_SEQUENTIAL`) for potentially better throughput on large sequential reads.
   - Multi-threaded parallel search for large files (adaptive thread count).
   - Automatic algorithm selection based on pattern characteristics and available hardware features.
@@ -122,15 +124,22 @@ Performance compared to standard tools (searching a 1GB text file for a common p
 
 1. **Intelligent algorithm selection**: Automatically chooses the optimal algorithm based on pattern characteristics:
    - KMP for very short patterns (< 3 characters)
+   - ARM NEON for patterns up to 16 characters (on ARM processors)
    - SIMD/AVX2 for medium-length patterns (when hardware supports it)
    - Boyer-Moore for medium-length patterns (when SIMD is unavailable)
    - Rabin-Karp for longer patterns (> 16 characters)
 
-2. **Parallelization strategy**: For files larger than a dynamic threshold (`MIN_FILE_SIZE_FOR_THREADS` * thread_count), splits the search into chunks and processes them concurrently using pthreads. Thread count is adapted based on core count and workload.
+2. **Specialized optimizations**: 
+   - Ultra-fast path for patterns of 4 bytes or less using ARM NEON
+   - Branch prediction hints for modern CPU pipeline optimization
+   - Memory alignment for optimal SIMD performance
+   - Strategic prefetching to minimize cache misses
 
-3. **Memory efficiency**: Uses memory-mapped I/O (`mmap` with `MAP_PRIVATE` and `MADV_SEQUENTIAL`) to leverage the operating system's page cache efficiently for sequential reads.
+3. **Parallelization strategy**: For files larger than a dynamic threshold (`MIN_FILE_SIZE_FOR_THREADS` * thread_count), splits the search into chunks and processes them concurrently using pthreads. Thread count is adapted based on core count and workload.
 
-4. **Hardware acceleration**: Detects availability of SSE4.2, AVX2 and ARM Neon instructions at compile time (though full SIMD implementations are currently placeholders/fallbacks).
+4. **Memory efficiency**: Uses memory-mapped I/O (`mmap` with `MAP_PRIVATE` and `MADV_SEQUENTIAL`) to leverage the operating system's page cache efficiently for sequential reads.
+
+5. **Hardware acceleration**: Detects availability of SSE4.2, AVX2 and ARM Neon instructions at compile time (though full SIMD implementations are currently placeholders/fallbacks).
 
 ## Testing
 

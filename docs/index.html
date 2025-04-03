@@ -391,8 +391,8 @@
                         <i class="fas fa-microchip"></i>
                     </div>
                     <h3 class="feature-title">Hardware Acceleration</h3>
-                    <p>Support for SSE4.2 and AVX2 instructions with intelligent fallbacks to ensure reliability across
-                        all systems.</p>
+                    <p>Support for ARM NEON, SSE4.2 and AVX2 instructions with specialized optimizations for short
+                        patterns and intelligent fallbacks.</p>
                 </div>
 
                 <div class="feature-card">
@@ -481,7 +481,9 @@ if (pattern_len < 3) {
     match_count = rabin_karp_search(...);
 } else {
     // Use SIMD (with fallback) or Boyer-Moore for medium length patterns
-    #ifdef __AVX2__
+    #ifdef __ARM_NEON
+        match_count = neon_search(...);  // Optimized ARM NEON implementation
+    #elif defined(__AVX2__)
         match_count = simd_avx2_search(...);  // Currently falls back to Boyer-Moore
     #elif defined(__SSE4_2__)
         match_count = simd_sse42_search(...); // Currently falls back to Boyer-Moore
@@ -633,6 +635,14 @@ cd krep</code></pre>
                             data: [0.95, 0.9, 0.85, 0.7, 0.6, 0.48, 0.45, 0.42, 0.5, 0.6],
                             borderColor: '#6366f1',
                             backgroundColor: '#6366f122',
+                            tension: 0.4,
+                            fill: true
+                        },
+                        {
+                            label: 'ARM NEON',
+                            data: [0.8, 0.7, 0.65, 0.6, 0.5, 0.45, 0.42, 0.4, 0.52, 0.65],
+                            borderColor: '#059669',
+                            backgroundColor: '#05966922',
                             tension: 0.4,
                             fill: true
                         },

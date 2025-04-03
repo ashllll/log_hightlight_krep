@@ -1,7 +1,7 @@
 /* krep - A high-performance string search utility
  *
  * Author: Davide Santangelo
- * Version: 0.3.4
+ * Version: 0.3.5
  * Year: 2025
  *
  * Features:
@@ -46,6 +46,10 @@ const size_t SIMD_MAX_LEN_SSE42 = 16;
 const size_t SIMD_MAX_LEN_AVX2 = 32;
 #endif
 
+#ifdef __ARM_NEON
+#include <arm_neon.h>
+#endif
+
 // Include the header file where match_position_t and match_result_t are defined
 #include "krep.h"
 
@@ -54,7 +58,7 @@ const size_t SIMD_MAX_LEN_AVX2 = 32;
 #define DEFAULT_THREAD_COUNT 4
 #define MIN_FILE_SIZE_FOR_THREADS (1 * 1024 * 1024) // 1MB minimum for threading
 // #define CHUNK_SIZE (16 * 1024 * 1024)            // Base chunk size - currently unused, calculated dynamically
-#define VERSION "0.3.4"
+#define VERSION "0.3.5"
 
 // ANSI Color Codes for Highlighting
 #define KREP_COLOR_MATCH "\033[1;31m" // Bold Red
