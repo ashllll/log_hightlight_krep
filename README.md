@@ -96,6 +96,76 @@ krep -s "Hello" "Hello world"
 - `-v` Display version information
 - `-h` Display help message
 
+## Regular Expressions
+
+`krep` supports POSIX Extended Regular Expressions (ERE) with the `-r` flag, allowing you to perform complex pattern matching beyond simple string searches.
+
+### Basic Regex Syntax
+
+- `.` - Matches any single character
+- `[]` - Character class, matches any character inside the brackets
+- `[^]` - Negated character class, matches any character NOT inside the brackets
+- `^` - Matches the start of a line
+- `$` - Matches the end of a line
+- `*` - Matches 0 or more occurrences of the previous character/group
+- `+` - Matches 1 or more occurrences of the previous character/group
+- `?` - Matches 0 or 1 occurrence of the previous character/group
+- `{n}` - Matches exactly n occurrences of the previous character/group
+- `{n,}` - Matches n or more occurrences of the previous character/group
+- `{n,m}` - Matches between n and m occurrences of the previous character/group
+- `|` - Alternation, matches either the pattern before or after it
+- `()` - Grouping, groups patterns together for applying operators
+
+### Example Patterns
+
+Find all error messages (case-insensitive):
+```bash
+krep -r -i "error:.*" log.txt
+```
+
+Match IP addresses:
+```bash
+krep -r "[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}" network.log
+```
+
+Find all email addresses:
+```bash
+krep -r "[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}" contacts.txt
+```
+
+Match lines that begin with "Date:":
+```bash
+krep -r "^Date:" message.txt
+```
+
+Find words that are exactly 5 characters long:
+```bash
+krep -r "(^| )[a-zA-Z]{5}( |$)" text.txt
+```
+
+Count occurrences of words starting with a vowel:
+```bash
+krep -r -c "(^| )[aeiouAEIOU][a-zA-Z]*( |$)" document.txt
+```
+
+Match both "color" and "colour" spellings:
+```bash
+krep -r "colou?r" document.txt
+```
+
+### Performance Considerations
+
+- Regular expression searches may be slower than literal string searches, especially for complex patterns
+- The regex engine uses POSIX ERE standards which do not support some features found in other regex flavors (like Perl or PCRE)
+- Overly complex regex patterns with excessive backtracking may impact performance on very large files
+- When searching large files with regex patterns, consider using the thread option (`-t`) to improve performance
+
+### Limitations
+
+- Lookbehind and lookahead assertions are not supported (POSIX ERE limitation)
+- Backreferences are not supported in the current implementation
+- Non-greedy (lazy) matching is not available in POSIX ERE
+
 ## Performance
 
 `krep` is designed with performance as a primary goal:
