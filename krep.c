@@ -1,7 +1,7 @@
 /* krep - A high-performance string search utility
  *
  * Author: Davide Santangelo
- * Version: 0.3.5
+ * Version: 0.3.6
  * Year: 2025
  *
  * Features:
@@ -9,11 +9,13 @@
  * - Basic SIMD (SSE4.2) acceleration implemented (Currently Disabled - Fallback)
  * - Placeholders for AVX2 acceleration
  * - Memory-mapped file I/O for maximum throughput (Optimized flags)
- * - Multi-threaded parallel search for large files
+ * - Multi-threaded parallel search for large files (count mode only)
  * - Case-sensitive and case-insensitive matching
  * - Direct string search in addition to file search
  * - Regular expression search support (POSIX, compiled once, fixed loop)
  * - Matching line printing with filename prefix and highlighting (single-thread only)
+ * - Reports unique matching lines AND total occurrences when printing lines,
+ * reports total occurrences when using -c.
  */
 
 #include <stdio.h>
@@ -28,7 +30,7 @@
 #include <sys/stat.h>
 #include <sys/mman.h>
 #include <pthread.h>
-#include <inttypes.h>
+#include <inttypes.h> // For PRIu64 macro
 #include <errno.h>
 #include <limits.h> // For SIZE_MAX
 #include <regex.h>  // For POSIX regex support
@@ -57,8 +59,7 @@ const size_t SIMD_MAX_LEN_AVX2 = 32;
 #define MAX_PATTERN_LENGTH 1024
 #define DEFAULT_THREAD_COUNT 4
 #define MIN_FILE_SIZE_FOR_THREADS (1 * 1024 * 1024) // 1MB minimum for threading
-// #define CHUNK_SIZE (16 * 1024 * 1024)            // Base chunk size - currently unused, calculated dynamically
-#define VERSION "0.3.5"
+#define VERSION "0.3.6"                             // Keep version consistent
 
 // ANSI Color Codes for Highlighting
 #define KREP_COLOR_MATCH "\033[1;31m" // Bold Red
@@ -175,7 +176,6 @@ void match_result_free(match_result_t *result)
 }
 
 /* --- Line finding and printing functions --- */
-// (find_line_start, find_line_end remain the same)
 static size_t find_line_start(const char *text, size_t pos)
 {
     // Scan backwards from pos until newline or start of text
@@ -201,23 +201,27 @@ static size_t find_line_end(const char *text, size_t text_len, size_t pos)
     return pos;
 }
 
-void print_matching_lines(const char *filename, const char *text, size_t text_len, const match_result_t *result)
+// MODIFIED: Returns the number of unique lines printed
+size_t print_matching_lines(const char *filename, const char *text, size_t text_len, const match_result_t *result)
 {
     if (!result || !text || result->count == 0)
-        return;
+        return 0; // Return 0 lines printed
 
     bool is_string_search = (filename == NULL);
     size_t *printed_lines = NULL;
-    size_t printed_lines_count = 0;
+    size_t printed_lines_count = 0; // Count of unique lines printed
     size_t printed_lines_capacity = 0;
+    bool allocation_failed = false;
 
+    // Allocate tracking array only for file search to avoid duplicate lines
     if (!is_string_search)
     {
-        printed_lines_capacity = 64;
+        printed_lines_capacity = 64; // Initial capacity
         printed_lines = malloc(printed_lines_capacity * sizeof(size_t));
         if (!printed_lines)
         {
             fprintf(stderr, "Warning: Failed to allocate memory for line tracking. Duplicate lines might be printed.\n");
+            allocation_failed = true; // Proceed without tracking if allocation fails
         }
     }
 
@@ -235,7 +239,8 @@ void print_matching_lines(const char *filename, const char *text, size_t text_le
         size_t line_start = find_line_start(text, match_start);
         size_t line_end = find_line_end(text, text_len, match_start);
 
-        if (!is_string_search && printed_lines)
+        // --- Check if line was already printed (only for file mode) ---
+        if (!is_string_search && printed_lines && !allocation_failed)
         {
             bool already_printed = false;
             for (size_t j = 0; j < printed_lines_count; j++)
@@ -247,13 +252,16 @@ void print_matching_lines(const char *filename, const char *text, size_t text_le
                 }
             }
             if (already_printed)
-                continue;
+                continue; // Skip printing this line again
 
+            // Add line_start to tracking array if not full
             if (printed_lines_count >= printed_lines_capacity)
             {
+                // Attempt to resize
                 if (printed_lines_capacity > SIZE_MAX / 2)
                 {
                     fprintf(stderr, "Warning: Cannot expand line tracking array further due to potential overflow.\n");
+                    allocation_failed = true; // Stop trying to track
                 }
                 else
                 {
@@ -262,6 +270,7 @@ void print_matching_lines(const char *filename, const char *text, size_t text_le
                     if (!new_printed_lines)
                     {
                         fprintf(stderr, "Warning: Failed to reallocate line tracking array. Duplicate lines might be printed.\n");
+                        allocation_failed = true; // Stop trying to track
                     }
                     else
                     {
@@ -270,23 +279,27 @@ void print_matching_lines(const char *filename, const char *text, size_t text_le
                     }
                 }
             }
-            if (printed_lines_count < printed_lines_capacity)
+            // Add if space available and no previous allocation failure
+            if (!allocation_failed && printed_lines_count < printed_lines_capacity)
             {
-                printed_lines[printed_lines_count++] = line_start;
+                printed_lines[printed_lines_count] = line_start;
+                // Increment count AFTER potential printing below
             }
-            else
+            else if (!allocation_failed)
             {
                 fprintf(stderr, "Warning: Line tracking array full, duplicate lines might be printed.\n");
+                allocation_failed = true; // Stop trying to track
             }
         }
 
+        // --- Format and Print the Line ---
         char *formatted_line = NULL;
         size_t formatted_length = 0;
         FILE *memfile = open_memstream(&formatted_line, &formatted_length);
         if (!memfile)
         {
             perror("Error: Failed to create memory stream for line formatting");
-            continue;
+            continue; // Skip this match
         }
 
         // 1. Print filename prefix (if applicable)
@@ -303,7 +316,7 @@ void print_matching_lines(const char *filename, const char *text, size_t text_le
         }
 
         // 2. Construct the line content with highlighting
-        if (is_string_search)
+        if (is_string_search) // String search: highlight only the first match found for this line
         {
             if (color_output_enabled)
             {
@@ -313,30 +326,39 @@ void print_matching_lines(const char *filename, const char *text, size_t text_le
             {
                 fprintf(memfile, "[%zu] ", match_start);
             }
-            // Print part before match using fprintf
-            fprintf(memfile, "%.*s", (int)(match_start - line_start), text + line_start);
+            // Print part before match
+            if (match_start > line_start)
+            {
+                fprintf(memfile, "%.*s", (int)(match_start - line_start), text + line_start);
+            }
             // Print highlighted match
             if (color_output_enabled)
                 fprintf(memfile, KREP_COLOR_MATCH);
-            fprintf(memfile, "%.*s", (int)(match_end - match_start), text + match_start); // Use fprintf
+            fprintf(memfile, "%.*s", (int)(match_end - match_start), text + match_start);
             if (color_output_enabled)
                 fprintf(memfile, KREP_COLOR_RESET);
-            // Print part after match using fprintf
-            fprintf(memfile, "%.*s", (int)(line_end - match_end), text + match_end);
+            // Print part after match
+            if (line_end > match_end)
+            {
+                fprintf(memfile, "%.*s", (int)(line_end - match_end), text + match_end);
+            }
         }
-        else
-        { // File search: highlight all matches on the line
+        else // File search: highlight all matches on the line
+        {
             size_t current_pos_on_line = line_start;
+            // Inner loop to find all matches pertaining to the *current* line
             for (uint64_t k = 0; k < result->count; k++)
             {
                 size_t k_match_start = result->positions[k].start_offset;
                 size_t k_match_end = result->positions[k].end_offset;
 
+                // Check if this match (k) falls within the current line boundaries
                 if (k_match_start >= line_start && k_match_start < line_end)
                 {
+                    // Ensure we process matches in order on the line
                     if (k_match_start >= current_pos_on_line)
                     {
-                        // Print text before this match using fprintf
+                        // Print text before this match
                         if (k_match_start > current_pos_on_line)
                         {
                             fprintf(memfile, "%.*s", (int)(k_match_start - current_pos_on_line), text + current_pos_on_line);
@@ -345,17 +367,17 @@ void print_matching_lines(const char *filename, const char *text, size_t text_le
                         // Print the highlighted match
                         if (color_output_enabled)
                             fprintf(memfile, KREP_COLOR_MATCH); // START COLOR
+                        // Clamp match end to line end if it spans lines
                         size_t highlight_end = (k_match_end > line_end) ? line_end : k_match_end;
                         size_t highlight_len = (highlight_end > k_match_start) ? highlight_end - k_match_start : 0;
-                        fprintf(memfile, "%.*s", (int)highlight_len, text + k_match_start); // Use fprintf
+                        fprintf(memfile, "%.*s", (int)highlight_len, text + k_match_start);
                         if (color_output_enabled)
                             fprintf(memfile, KREP_COLOR_RESET); // END COLOR
 
-                        current_pos_on_line = highlight_end;
+                        current_pos_on_line = highlight_end; // Update position
                     }
                 }
-            } // End inner loop (k)
-            // Print remaining text after the last match using fprintf
+            } // End inner loop (k) for highlighting all matches on the line
             if (current_pos_on_line < line_end)
             {
                 fprintf(memfile, "%.*s", (int)(line_end - current_pos_on_line), text + current_pos_on_line);
@@ -373,6 +395,15 @@ void print_matching_lines(const char *filename, const char *text, size_t text_le
         {
             puts(formatted_line); // Print the complete line
             free(formatted_line);
+            // Increment unique line count *after* successfully printing
+            if (!is_string_search && !allocation_failed)
+            {
+                printed_lines_count++;
+            }
+            else if (is_string_search)
+            {
+                printed_lines_count++; // Count every line in string search mode
+            }
         }
         else
         {
@@ -382,6 +413,8 @@ void print_matching_lines(const char *filename, const char *text, size_t text_le
 
     if (printed_lines)
         free(printed_lines);
+
+    return printed_lines_count; // Return the count of unique lines printed
 }
 
 /* --- Forward declarations --- */
@@ -408,9 +441,26 @@ uint64_t regex_search(const char *text, size_t text_len,
                       size_t report_limit_offset,
                       bool track_positions,
                       match_result_t *result);
+#ifdef __SSE4_2__
+uint64_t simd_sse42_search(const char *text, size_t text_len,
+                           const char *pattern, size_t pattern_len,
+                           bool case_sensitive, size_t report_limit_offset,
+                           bool track_positions, match_result_t *result);
+#endif
+#ifdef __AVX2__
+uint64_t simd_avx2_search(const char *text, size_t text_len,
+                          const char *pattern, size_t pattern_len,
+                          bool case_sensitive, size_t report_limit_offset,
+                          bool track_positions, match_result_t *result);
+#endif
+#ifdef __ARM_NEON
+uint64_t neon_search(const char *text, size_t text_len,
+                     const char *pattern, size_t pattern_len,
+                     bool case_sensitive, size_t report_limit_offset,
+                     bool track_positions, match_result_t *result);
+#endif
 
 /* --- Utility Functions --- */
-// (get_time, print_usage remain the same)
 double get_time(void)
 {
     struct timespec ts;
@@ -433,24 +483,23 @@ void print_usage(const char *program_name)
     printf("Usage: %s [OPTIONS] PATTERN FILE\n", program_name);
     printf("   or: %s [OPTIONS] -s PATTERN STRING_TO_SEARCH\n\n", program_name);
     printf("OPTIONS:\n");
-    printf("  -i            Perform case-insensitive matching.\n");
-    printf("  -c            Only print a count of matches found.\n");
-    printf("  -r            Treat PATTERN as a regular expression (POSIX Extended).\n");
-    printf("  -t NUM        Use NUM threads for file search (default: auto-detected cores, max reasonable).\n"); // Clarified default
-    printf("  -s            Search in STRING_TO_SEARCH instead of a FILE.\n");
+    printf("  -i             Perform case-insensitive matching.\n");
+    printf("  -c             Only print a count of matches found (total occurrences).\n"); // Clarified -c count
+    printf("  -r             Treat PATTERN as a regular expression (POSIX Extended).\n");
+    printf("  -t NUM         Use NUM threads for file search (count mode only, default: auto).\n"); // Clarified threading limitation
+    printf("  -s             Search in STRING_TO_SEARCH instead of a FILE.\n");
     printf("  --color[=WHEN] Control color output ('always', 'never', 'auto'). Default: 'auto'.\n"); // TODO: Implement fully with getopt_long
-    printf("  -v            Display version information and exit.\n");
-    printf("  -h            Display this help message and exit.\n\n");
+    printf("  -v             Display version information and exit.\n");
+    printf("  -h             Display this help message and exit.\n\n");
     printf("EXAMPLES:\n");
     printf("  %s \"search term\" input.log\n", program_name);
-    printf("  %s -i -t 8 ERROR large_log.txt\n", program_name);
+    printf("  %s -i -c -t 8 ERROR large_log.txt\n", program_name);        // Example with -c and -t
     printf("  %s -r \"^[Ee]rror: .*failed\" system.log\n", program_name); // Example regex
     printf("  %s -s \"pattern\" \"Search for pattern in this string.\"\n", program_name);
-    printf("  echo \"Data stream with word\" | %s -c word -\n", program_name); // Example with stdin (needs file arg '-') - CURRENTLY UNSUPPORTED
+    // printf("  echo \"Data stream with word\" | %s -c word -\n", program_name); // Example with stdin (needs file arg '-') - CURRENTLY UNSUPPORTED
 }
 
 /* --- Boyer-Moore-Horspool Algorithm --- */
-// (prepare_bad_char_table remains the same)
 void prepare_bad_char_table(const char *pattern, size_t pattern_len,
                             int *bad_char_table, bool case_sensitive)
 {
@@ -494,7 +543,6 @@ void prepare_bad_char_table(const char *pattern, size_t pattern_len,
     // unless it also appears earlier in the pattern.
 }
 
-// Modified to track positions
 uint64_t boyer_moore_search(const char *text, size_t text_len,
                             const char *pattern, size_t pattern_len,
                             bool case_sensitive, size_t report_limit_offset,
@@ -592,7 +640,6 @@ uint64_t boyer_moore_search(const char *text, size_t text_len,
 }
 
 /* --- Knuth-Morris-Pratt (KMP) Algorithm --- */
-// Computes the Longest Proper Prefix which is also a Suffix (LPS) array
 static void compute_lps_array(const char *pattern, size_t pattern_len, int *lps, bool case_sensitive)
 {
     // lps[i] stores the length of the longest proper prefix of pattern[0...i]
@@ -641,7 +688,6 @@ static void compute_lps_array(const char *pattern, size_t pattern_len, int *lps,
     }
 }
 
-// KMP search function modified to track positions
 uint64_t kmp_search(const char *text, size_t text_len,
                     const char *pattern, size_t pattern_len,
                     bool case_sensitive, size_t report_limit_offset,
@@ -778,7 +824,6 @@ uint64_t kmp_search(const char *text, size_t text_len,
 }
 
 /* --- Rabin-Karp Algorithm --- */
-// Modified to track positions
 uint64_t rabin_karp_search(const char *text, size_t text_len,
                            const char *pattern, size_t pattern_len,
                            bool case_sensitive, size_t report_limit_offset,
@@ -899,8 +944,6 @@ uint64_t rabin_karp_search(const char *text, size_t text_len,
 }
 
 /* --- SIMD Search Implementations --- */
-// NOTE: SIMD implementations need modification to track positions if used for line printing.
-// Currently, they fallback to Boyer-Moore which handles position tracking.
 #ifdef __SSE4_2__
 uint64_t simd_sse42_search(const char *text, size_t text_len,
                            const char *pattern, size_t pattern_len,
@@ -959,7 +1002,6 @@ uint64_t neon_search(const char *text, size_t text_len,
 #endif // __ARM_NEON
 
 /* --- Regex Search --- */
-// Uses POSIX regex library (regex.h)
 uint64_t regex_search(const char *text, size_t text_len,
                       const regex_t *compiled_regex,
                       size_t report_limit_offset,
@@ -1075,20 +1117,12 @@ uint64_t regex_search(const char *text, size_t text_len,
         exec_flags = REG_NOTBOL;
         // REG_NOTEOL might also be needed depending on '$' behavior desired.
 
-        // Optimization: if current_offset reached end, break early
-        // This check is technically redundant due to the outer while loop condition,
-        // but can be kept for clarity.
-        // if (current_offset >= text_len) {
-        //     break;
-        // }
-
     } // End while loop for finding matches
 
     return match_count;
 }
 
 /* --- Multi-threading Logic --- */
-// search_thread function performs search within a designated chunk of the file
 void *search_thread(void *arg)
 {
     search_job_t *job = (search_job_t *)arg;
@@ -1189,7 +1223,7 @@ void *search_thread(void *arg)
 #elif defined(__ARM_NEON)
         // Placeholder for potential NEON implementation
         // else if (job->pattern_len <= NEON_MAX_LEN) { // Define NEON_MAX_LEN if needed
-        //      job->local_count = neon_search(buffer_ptr, buffer_len, job->pattern, job->pattern_len, job->case_sensitive, report_limit_offset, track_positions, result);
+        //     job->local_count = neon_search(buffer_ptr, buffer_len, job->pattern, job->pattern_len, job->case_sensitive, report_limit_offset, track_positions, result);
         // }
         else if (job->pattern_len > RK_THRESH) // Use RK only if no SIMD and pattern is long
         {
@@ -1200,7 +1234,7 @@ void *search_thread(void *arg)
             job->local_count = boyer_moore_search(buffer_ptr, buffer_len, job->pattern, job->pattern_len, job->case_sensitive, report_limit_offset, track_positions, result);
         }
 #else  // No SIMD defined path
-        else if (job->pattern_len > RK_THRESH) // Use RK if pattern is long
+        else if (job->pattern_len > RK_THRESH) // Use RK if long pattern
         {
             job->local_count = rabin_karp_search(buffer_ptr, buffer_len, job->pattern, job->pattern_len, job->case_sensitive, report_limit_offset, track_positions, result);
         }
@@ -1223,8 +1257,9 @@ void *search_thread(void *arg)
 int search_string(const char *pattern, size_t pattern_len, const char *text, bool case_sensitive, bool use_regex, bool count_only)
 {
     double start_time = get_time();
-    size_t text_len = strlen(text); // Assume text is null-terminated
-    uint64_t match_count = 0;
+    size_t text_len = strlen(text);  // Assume text is null-terminated
+    uint64_t total_match_count = 0;  // Total occurrences
+    size_t unique_lines_printed = 0; // Count of unique lines printed
     regex_t compiled_regex;
     bool regex_compiled = false;
     const char *algo_name = "Unknown";
@@ -1256,7 +1291,7 @@ int search_string(const char *pattern, size_t pattern_len, const char *text, boo
         else
         {
             // Print minimal summary even for no matches
-            printf("Found 0 matches\n");
+            printf("\nFound 0 matching lines\n"); // Report lines here
             // Optionally print timing and details
             double end_time = get_time();
             printf("Search completed in %.4f seconds\n", end_time - start_time);
@@ -1305,10 +1340,10 @@ int search_string(const char *pattern, size_t pattern_len, const char *text, boo
         regex_compiled = true;
         algo_name = "Regex (POSIX)";
         // Perform regex search
-        match_count = regex_search(text, text_len, &compiled_regex, text_len, track_positions, matches);
+        total_match_count = regex_search(text, text_len, &compiled_regex, text_len, track_positions, matches);
     }
-    else // Not using regex
-    {
+    else
+    { // Not using regex
         // --- Select and Execute Non-Regex Algorithm ---
         const size_t KMP_THRESH = 3;
         const size_t RK_THRESH = 32;
@@ -1316,42 +1351,42 @@ int search_string(const char *pattern, size_t pattern_len, const char *text, boo
 
         if (pattern_len < KMP_THRESH)
         {
-            match_count = kmp_search(text, text_len, pattern, pattern_len, case_sensitive, report_limit, track_positions, matches);
+            total_match_count = kmp_search(text, text_len, pattern, pattern_len, case_sensitive, report_limit, track_positions, matches);
             algo_name = "KMP";
         }
 #ifdef __AVX2__
         else if (pattern_len <= SIMD_MAX_LEN_AVX2)
         {
-            match_count = simd_avx2_search(text, text_len, pattern, pattern_len, case_sensitive, report_limit, track_positions, matches);
+            total_match_count = simd_avx2_search(text, text_len, pattern, pattern_len, case_sensitive, report_limit, track_positions, matches);
             algo_name = "AVX2 (Fallback)"; // Update if implemented
         }
 #elif defined(__SSE4_2__)
         else if (pattern_len <= SIMD_MAX_LEN_SSE42)
         {
-            match_count = simd_sse42_search(text, text_len, pattern, pattern_len, case_sensitive, report_limit, track_positions, matches);
+            total_match_count = simd_sse42_search(text, text_len, pattern, pattern_len, case_sensitive, report_limit, track_positions, matches);
             algo_name = "SSE4.2 (Fallback)"; // Update if implemented
         }
 #elif defined(__ARM_NEON)
-        // else if (pattern_len <= NEON_MAX_LEN) { match_count = neon_search(text, text_len, pattern, pattern_len, case_sensitive, report_limit, track_positions, matches); algo_name = "NEON (Fallback)"; }
+        // else if (pattern_len <= NEON_MAX_LEN) { total_match_count = neon_search(text, text_len, pattern, pattern_len, case_sensitive, report_limit, track_positions, matches); algo_name = "NEON (Fallback)"; }
         else if (pattern_len > RK_THRESH)
         { // Use RK only if no SIMD and long pattern
-            match_count = rabin_karp_search(text, text_len, pattern, pattern_len, case_sensitive, report_limit, track_positions, matches);
+            total_match_count = rabin_karp_search(text, text_len, pattern, pattern_len, case_sensitive, report_limit, track_positions, matches);
             algo_name = "Rabin-Karp";
         }
         else
         { // Default BMH
-            match_count = boyer_moore_search(text, text_len, pattern, pattern_len, case_sensitive, report_limit, track_positions, matches);
+            total_match_count = boyer_moore_search(text, text_len, pattern, pattern_len, case_sensitive, report_limit, track_positions, matches);
             algo_name = "Boyer-Moore-Horspool";
         }
 #else // No SIMD defined path
         else if (pattern_len > RK_THRESH)
         { // Use RK if long pattern
-            match_count = rabin_karp_search(text, text_len, pattern, pattern_len, case_sensitive, report_limit, track_positions, matches);
+            total_match_count = rabin_karp_search(text, text_len, pattern, pattern_len, case_sensitive, report_limit, track_positions, matches);
             algo_name = "Rabin-Karp";
         }
         else
         { // Default BMH
-            match_count = boyer_moore_search(text, text_len, pattern, pattern_len, case_sensitive, report_limit, track_positions, matches);
+            total_match_count = boyer_moore_search(text, text_len, pattern, pattern_len, case_sensitive, report_limit, track_positions, matches);
             algo_name = "Boyer-Moore-Horspool";
         }
 #endif
@@ -1363,26 +1398,29 @@ int search_string(const char *pattern, size_t pattern_len, const char *text, boo
 
     if (count_only)
     {
-        printf("%" PRIu64 "\n", match_count);
+        // Report total occurrences when -c is used
+        printf("%" PRIu64 "\n", total_match_count);
     }
     else
     {
         // Print matching lines (using filename=NULL for string search context)
         if (track_positions && matches && matches->count > 0)
         {
-            print_matching_lines(NULL, text, text_len, matches);
+            // Get the count of unique lines printed
+            unique_lines_printed = print_matching_lines(NULL, text, text_len, matches);
         }
 
         // Print summary details
         // Add separator if lines were printed
-        if (track_positions && matches && matches->count > 0)
+        if (track_positions && unique_lines_printed > 0)
         {
-            printf("\n--- Total Matches: %" PRIu64 " ---\n", match_count);
+            // MODIFIED: Print both lines and matches
+            printf("\nLines: %zu \n Matches: %" PRIu64 "\n", unique_lines_printed, total_match_count);
         }
         else
         {
-            // Otherwise, print simple count line
-            printf("Found %" PRIu64 " matches\n", match_count);
+            // Otherwise, print simple count line (using unique lines if available, else total matches)
+            printf("Found %" PRIu64 " matching lines/matches\n", track_positions ? unique_lines_printed : total_match_count);
         }
 
         printf("Search completed in %.4f seconds\n", search_time);
@@ -1397,8 +1435,8 @@ int search_string(const char *pattern, size_t pattern_len, const char *text, boo
     // --- Cleanup ---
     if (regex_compiled)
         regfree(&compiled_regex);
-    if (matches) // Free matches struct if allocated
-        match_result_free(matches);
+    if (matches)
+        match_result_free(matches); // Free matches struct if allocated
 
     return 0; // Return success code
 }
@@ -1411,9 +1449,10 @@ int search_file(const char *filename, const char *pattern, size_t pattern_len, b
                 bool count_only, int thread_count, bool use_regex)
 {
     double start_time = get_time();
-    uint64_t total_match_count = 0;
-    int fd = -1;                  // File descriptor
-    char *file_data = MAP_FAILED; // Pointer to memory-mapped file data
+    uint64_t total_match_count = 0;  // Total occurrences found
+    size_t unique_lines_printed = 0; // Count of unique lines printed (only used in single-thread print mode)
+    int fd = -1;                     // File descriptor
+    char *file_data = MAP_FAILED;    // Pointer to memory-mapped file data
     size_t file_size = 0;
     regex_t compiled_regex;
     bool regex_compiled = false;
@@ -1475,8 +1514,8 @@ int search_file(const char *filename, const char *pattern, size_t pattern_len, b
         if (count_only)
             printf("0\n");
         else
-            printf("Found 0 matches in '%s'\n", filename); // Provide feedback
-        return 0;                                          // Return success (0 matches found)
+            printf("\nFound 0 matches in '%s'\n", filename); // Provide feedback
+        return 0;                                            // Return success (0 matches found)
     }
 
     // --- Compile Regex (if needed, before memory mapping) ---
@@ -1544,18 +1583,16 @@ int search_file(const char *filename, const char *pattern, size_t pattern_len, b
     size_t dynamic_threshold = MIN_FILE_SIZE_FOR_THREADS * actual_thread_count;
     // Initially assume track_positions is true if !count_only
     track_positions = !count_only;
-    // Use multi-threading only if file is large enough, more than 1 thread, AND not printing lines.
-    bool use_multithreading = (file_size >= dynamic_threshold) && (actual_thread_count > 1) && !track_positions;
+    // Use multi-threading only if file is large enough, more than 1 thread, AND count_only is true.
+    bool use_multithreading = (file_size >= dynamic_threshold) && (actual_thread_count > 1) && count_only;
 
     // Force single-threaded mode if line printing is requested, issue warning.
-    if (track_positions && actual_thread_count > 1)
+    if (!count_only && actual_thread_count > 1)
     {
         fprintf(stderr, "Warning: Line printing forces single-threaded mode (-t ignored).\n");
         use_multithreading = false;
         actual_thread_count = 1; // Override thread count
     }
-    // If count_only is true, track_positions is false, so use_multithreading decision is based on size/threads.
-
     // Final determination of track_positions: True only if !count_only AND !use_multithreading.
     track_positions = !count_only && !use_multithreading;
 
@@ -1609,31 +1646,31 @@ int search_file(const char *filename, const char *pattern, size_t pattern_len, b
 #elif defined(__ARM_NEON)
             // else if (pattern_len <= NEON_MAX_LEN) { total_match_count = neon_search(file_data, file_size, pattern, pattern_len, case_sensitive, report_limit, track_positions, matches); algo_name = "NEON (Fallback)"; }
             else if (pattern_len > RK_THRESH)
-            {
+            { // Use RK only if no SIMD and long pattern
                 total_match_count = rabin_karp_search(file_data, file_size, pattern, pattern_len, case_sensitive, report_limit, track_positions, matches);
                 algo_name = "Rabin-Karp";
             }
             else
-            {
+            { // Default BMH
                 total_match_count = boyer_moore_search(file_data, file_size, pattern, pattern_len, case_sensitive, report_limit, track_positions, matches);
                 algo_name = "Boyer-Moore-Horspool";
             }
 #else // No SIMD
             else if (pattern_len > RK_THRESH)
-            {
+            { // Use RK if long pattern
                 total_match_count = rabin_karp_search(file_data, file_size, pattern, pattern_len, case_sensitive, report_limit, track_positions, matches);
                 algo_name = "Rabin-Karp";
             }
             else
-            {
+            { // Default BMH
                 total_match_count = boyer_moore_search(file_data, file_size, pattern, pattern_len, case_sensitive, report_limit, track_positions, matches);
                 algo_name = "Boyer-Moore-Horspool";
             }
 #endif
         }
     }
-    else // Use Multi-threading (track_positions is guaranteed false here)
-    {
+    else
+    { // Use Multi-threading (track_positions is guaranteed false here, count_only is true)
         // --- Multi-threaded Search ---
         pthread_t *threads = malloc(actual_thread_count * sizeof(pthread_t));
         search_job_t *jobs = malloc(actual_thread_count * sizeof(search_job_t));
@@ -1652,9 +1689,9 @@ int search_file(const char *filename, const char *pattern, size_t pattern_len, b
         }
 
         // Divide work among threads
-        size_t chunk_size = file_size / actual_thread_count;
-        if (chunk_size == 0 && file_size > 0)
-            chunk_size = 1; // Min chunk size 1
+        size_t chunk_size_per_thread = file_size / actual_thread_count; // Use different name from global CHUNK_SIZE
+        if (chunk_size_per_thread == 0 && file_size > 0)
+            chunk_size_per_thread = 1; // Min chunk size 1
         size_t current_pos = 0;
         int created_threads = 0; // Track successfully created threads
 
@@ -1663,7 +1700,7 @@ int search_file(const char *filename, const char *pattern, size_t pattern_len, b
             jobs[i].file_data = file_data;
             jobs[i].file_size = file_size;
             jobs[i].start_pos = current_pos;
-            jobs[i].end_pos = (i == actual_thread_count - 1) ? file_size : current_pos + chunk_size; // Last thread takes remainder
+            jobs[i].end_pos = (i == actual_thread_count - 1) ? file_size : current_pos + chunk_size_per_thread; // Last thread takes remainder
 
             // Clamp end_pos and handle edge cases
             if (jobs[i].end_pos > file_size)
@@ -1735,7 +1772,7 @@ int search_file(const char *filename, const char *pattern, size_t pattern_len, b
         // Print matching lines IF tracking was enabled (single-threaded, !count_only) AND matches were found
         if (track_positions && matches && matches->count > 0)
         {
-            print_matching_lines(filename, file_data, file_size, matches);
+            unique_lines_printed = print_matching_lines(filename, file_data, file_size, matches);
         }
 
         double end_time = get_time();
@@ -1746,20 +1783,28 @@ int search_file(const char *filename, const char *pattern, size_t pattern_len, b
         // --- Output based on flags ---
         if (count_only)
         {
-            // Only print the final count
+            // Only print the final count (total occurrences)
             printf("%" PRIu64 "\n", total_match_count);
         }
         else
         {
             // Not count_only: Print summary info
             // Add separator if lines were printed
-            if (track_positions && matches && matches->count > 0)
+            if (track_positions && unique_lines_printed > 0)
             {
-                printf("\n--- Total Matches: %" PRIu64 " ---\n", total_match_count);
+                // MODIFIED: Print both lines and matches
+                printf("\nLines: %zu\nMatches: %" PRIu64 "\n", unique_lines_printed, total_match_count);
+            }
+            else if (track_positions && matches && matches->count == 0)
+            {
+                // If tracking positions but found 0 matches (so 0 lines printed)
+                printf("\nFound 0 matching lines in '%s'\n", filename);
             }
             else
             {
-                // If lines weren't printed (multi-threaded or no matches), print simple count line
+                // If not tracking positions (i.e., count_only was true), report total matches found.
+                // Or if tracking failed allocation.
+                // Or if string mode and no lines printed (unique_lines_printed is 0)
                 printf("Found %" PRIu64 " matches in '%s'\n", total_match_count, filename);
             }
 
@@ -1807,6 +1852,7 @@ cleanup: // Central cleanup point
 }
 
 /* --- Main Entry Point --- */
+// (main function remains the same as previous version)
 #if !defined(TESTING) && !defined(TEST)
 __attribute__((weak)) // Make main weak for testing overrides
 int

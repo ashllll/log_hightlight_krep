@@ -1,18 +1,17 @@
-/**
- * Header file for krep - A high-performance string search utility
+/* krep.h - Header file for krep utility
  *
  * Author: Davide Santangelo
- * Version: 0.3.5
+ * Version: 0.3.6
  * Year: 2025
  */
 
 #ifndef KREP_H
 #define KREP_H
 
-#include <stdint.h>
 #include <stdbool.h>
-#include <stddef.h> // For size_t
-#include <regex.h>  // Needed for regex_t type
+#include <stdint.h>
+#include <stdio.h> // For size_t definition
+#include <regex.h> // For regex_t type
 
 /* --- ANSI Color Codes --- */
 // Define these here or ensure they are defined before use in print_matching_lines if called externally
@@ -94,13 +93,16 @@ void match_result_free(match_result_t *result);
 
 /**
  * @brief Print lines containing matches based on the positions stored in the result structure, with optional filename and highlighting.
+ * Handles duplicate line printing for file searches.
  *
  * @param filename Optional filename prefix to print for each line (e.g., "file.txt:"). Pass NULL if not needed.
  * @param text The original text buffer that was searched.
  * @param text_len Length of the text buffer.
  * @param result Pointer to the match_result_t structure containing match positions.
+ * @return The number of unique lines printed. Returns 0 if no lines were printed or on error.
  */
-void print_matching_lines(const char *filename, const char *text, size_t text_len, const match_result_t *result);
+// FIXED: Changed return type from void back to size_t to match definition
+size_t print_matching_lines(const char *filename, const char *text, size_t text_len, const match_result_t *result);
 
 /**
  * @brief Print program usage information.
