@@ -10,6 +10,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdlib.h>
+#include <limits.h>  // For SIZE_MAX
 #include <regex.h>   // For regex_t
 #include "../krep.h" // Include main header for the full function declarations
 
@@ -26,11 +27,15 @@ static inline uint64_t boyer_moore_search_compat(
     const char *pattern, size_t pattern_len,
     bool case_sensitive, size_t report_limit_offset)
 {
-    // Call the 11-parameter version
+    // Dummy state variables for line counting (not used by caller)
+    uint64_t dummy_line_count = 0;
+    size_t dummy_last_line_start = SIZE_MAX;
+    size_t dummy_last_line_end = 0;
+    // Call the 11-parameter version (MODIFIED: Pass 11 args)
     return boyer_moore_search(text, text_len, pattern, pattern_len,
                               case_sensitive, report_limit_offset,
-                              false, NULL, NULL, // count_lines_mode, line_match_count, last_counted_line_start
-                              false, NULL);      // track_positions, result
+                              false, &dummy_line_count, &dummy_last_line_start, &dummy_last_line_end, // Pass dummy end offset
+                              false, NULL);                                                           // track_positions, result
 }
 
 /* Knuth-Morris-Pratt compatibility wrapper */
@@ -39,11 +44,15 @@ static inline uint64_t kmp_search_compat(
     const char *pattern, size_t pattern_len,
     bool case_sensitive, size_t report_limit_offset)
 {
-    // Call the 11-parameter version
+    // Dummy state variables
+    uint64_t dummy_line_count = 0;
+    size_t dummy_last_line_start = SIZE_MAX;
+    size_t dummy_last_line_end = 0;
+    // Call the 11-parameter version (MODIFIED: Pass 11 args)
     return kmp_search(text, text_len, pattern, pattern_len,
                       case_sensitive, report_limit_offset,
-                      false, NULL, NULL, // count_lines_mode, line_match_count, last_counted_line_start
-                      false, NULL);      // track_positions, result
+                      false, &dummy_line_count, &dummy_last_line_start, &dummy_last_line_end, // Pass dummy end offset
+                      false, NULL);                                                           // track_positions, result
 }
 
 /* Regex compatibility wrapper */
@@ -52,10 +61,14 @@ static inline uint64_t regex_search_compat(
     const regex_t *compiled_regex,
     size_t report_limit_offset)
 {
-    // Call the 9-parameter version
+    // Dummy state variables
+    uint64_t dummy_line_count = 0;
+    size_t dummy_last_line_start = SIZE_MAX;
+    size_t dummy_last_line_end = 0;
+    // Call the 9-parameter version (MODIFIED: Pass 9 args)
     return regex_search(text, text_len, compiled_regex, report_limit_offset,
-                        false, NULL, NULL, // count_lines_mode, line_match_count, last_counted_line_start
-                        false, NULL);      // track_positions, result
+                        false, &dummy_line_count, &dummy_last_line_start, &dummy_last_line_end, // Pass dummy end offset
+                        false, NULL);                                                           // track_positions, result
 }
 
 /* SIMD SSE4.2 compatibility wrapper */
@@ -65,11 +78,15 @@ static inline uint64_t simd_sse42_search_compat(
     const char *pattern, size_t pattern_len,
     bool case_sensitive, size_t report_limit_offset)
 {
-    // Call the 11-parameter version
+    // Dummy state variables
+    uint64_t dummy_line_count = 0;
+    size_t dummy_last_line_start = SIZE_MAX;
+    size_t dummy_last_line_end = 0;
+    // Call the 11-parameter version (MODIFIED: Pass 11 args)
     return simd_sse42_search(text, text_len, pattern, pattern_len,
                              case_sensitive, report_limit_offset,
-                             false, NULL, NULL, // count_lines_mode, line_match_count, last_counted_line_start
-                             false, NULL);      // track_positions, result
+                             false, &dummy_line_count, &dummy_last_line_start, &dummy_last_line_end, // Pass dummy end offset
+                             false, NULL);                                                           // track_positions, result
 }
 #endif
 
@@ -80,11 +97,15 @@ static inline uint64_t simd_avx2_search_compat(
     const char *pattern, size_t pattern_len,
     bool case_sensitive, size_t report_limit_offset)
 {
-    // Call the 11-parameter version
+    // Dummy state variables
+    uint64_t dummy_line_count = 0;
+    size_t dummy_last_line_start = SIZE_MAX;
+    size_t dummy_last_line_end = 0;
+    // Call the 11-parameter version (MODIFIED: Pass 11 args)
     return simd_avx2_search(text, text_len, pattern, pattern_len,
                             case_sensitive, report_limit_offset,
-                            false, NULL, NULL, // count_lines_mode, line_match_count, last_counted_line_start
-                            false, NULL);      // track_positions, result
+                            false, &dummy_line_count, &dummy_last_line_start, &dummy_last_line_end, // Pass dummy end offset
+                            false, NULL);                                                           // track_positions, result
 }
 #endif
 
@@ -95,11 +116,15 @@ static inline uint64_t neon_search_compat(
     const char *pattern, size_t pattern_len,
     bool case_sensitive, size_t report_limit_offset)
 {
-    // Call the 11-parameter version
+    // Dummy state variables
+    uint64_t dummy_line_count = 0;
+    size_t dummy_last_line_start = SIZE_MAX;
+    size_t dummy_last_line_end = 0;
+    // Call the 11-parameter version (MODIFIED: Pass 11 args)
     return neon_search(text, text_len, pattern, pattern_len,
                        case_sensitive, report_limit_offset,
-                       false, NULL, NULL, // count_lines_mode, line_match_count, last_counted_line_start
-                       false, NULL);      // track_positions, result
+                       false, &dummy_line_count, &dummy_last_line_start, &dummy_last_line_end, // Pass dummy end offset
+                       false, NULL);                                                           // track_positions, result
 }
 #endif
 

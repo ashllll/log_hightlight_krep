@@ -86,7 +86,8 @@ static uint64_t regex_search_wrapper(const char *text, size_t text_len,
     }
 
     // Explicitly call the _compat version which takes 4 args
-    uint64_t count = regex_search_compat(text, text_len, compiled, report_limit_offset);
+    // This relies on test_compat.h defining the macro correctly.
+    uint64_t count = regex_search(text, text_len, compiled, report_limit_offset);
 
     regfree(compiled);
     free(compiled);
@@ -118,20 +119,27 @@ static match_result_t *regex_search_with_positions(const char *text, size_t text
         return NULL;
     }
 
-// Temporarily undefine the macro to call the real function
-#undef regex_search
+    // --- MODIFIED: Restore #undef / #define ---
+    // The function signature requires passing pointers for the unused count/line params
+    uint64_t dummy_line_count = 0;
+    size_t dummy_last_line_start = SIZE_MAX;
+    size_t dummy_last_line_end = 0;
+
+#undef regex_search // Temporarily undefine the macro to call the real function
     // Call the real 9-argument regex_search
     regex_search(text, text_len, compiled, report_limit_offset,
-                 false, NULL, NULL, // count_lines_mode, line_match_count, last_counted_line_start
-                 true, result);     // track_positions, result
-// Redefine macro for subsequent code if needed (it's redefined when test_compat.h is included anyway)
-#define regex_search regex_search_compat
+                 false, &dummy_line_count, &dummy_last_line_start, &dummy_last_line_end, // Pass dummies for unused params
+                 true, result);                                                          // track_positions = true
+#define regex_search regex_search_compat                                                 // Redefine macro for subsequent code if needed
+    // --- End Modification ---
 
     regfree(compiled);
     free(compiled);
 
     return result;
 }
+
+// ... (Rest of test functions remain unchanged) ...
 
 /**
  * Test basic regex functionality

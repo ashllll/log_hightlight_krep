@@ -30,9 +30,10 @@
  * @brief Regex-based search using POSIX regular expressions.
  * (Matching the updated signature from krep.h)
  */
+// MODIFIED: Added last_matched_line_end parameter to match krep.h
 uint64_t regex_search(const char *text_start, size_t text_len, const regex_t *compiled_regex,
                       size_t report_limit_offset, bool count_lines_mode,
-                      uint64_t *line_match_count, size_t *last_counted_line_start,
+                      uint64_t *line_match_count, size_t *last_counted_line_start, size_t *last_matched_line_end,
                       bool track_positions, match_result_t *result);
 
 /* Declarations for regex test functions */
@@ -43,7 +44,7 @@ void test_regex_edge_cases(void);
 void test_regex_overlapping(void);
 void test_regex_report_limit(void);
 void test_regex_vs_literal_performance(void);
-void test_regex_line_extraction(void); // Added declaration
+void test_regex_line_extraction(void);
 void run_regex_tests(void);
 
 #endif /* TEST_KREP_H */

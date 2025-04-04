@@ -1,7 +1,7 @@
 /* krep.h - Header file for krep utility
  *
  * Author: Davide Santangelo
- * Version: 0.4.1
+ * Version: 0.4.2
  * Year: 2025
  */
 
@@ -113,13 +113,14 @@ void print_usage(const char *program_name);
  * @param count_lines_mode If true, count unique lines and store in line_match_count.
  * @param line_match_count Pointer to store unique line count (used if count_lines_mode is true).
  * @param last_counted_line_start Pointer to track the start offset of the last counted line.
+ * @param last_matched_line_end Pointer to track the end offset of the last matched line.
  * @param track_positions If true (and not count_lines_mode), store match positions in result.
  * @param result Pointer to initialized match_result_t (required if track_positions is true).
  * @return uint64_t Total physical match count found within the report limit.
  */
 uint64_t boyer_moore_search(const char *text_start, size_t text_len, const char *pattern, size_t pattern_len,
                             bool case_sensitive, size_t report_limit_offset, bool count_lines_mode,
-                            uint64_t *line_match_count, size_t *last_counted_line_start,
+                            uint64_t *line_match_count, size_t *last_counted_line_start, size_t *last_matched_line_end,
                             bool track_positions, match_result_t *result);
 
 /**
@@ -129,7 +130,7 @@ uint64_t boyer_moore_search(const char *text_start, size_t text_len, const char 
  */
 uint64_t kmp_search(const char *text_start, size_t text_len, const char *pattern, size_t pattern_len,
                     bool case_sensitive, size_t report_limit_offset, bool count_lines_mode,
-                    uint64_t *line_match_count, size_t *last_counted_line_start,
+                    uint64_t *line_match_count, size_t *last_counted_line_start, size_t *last_matched_line_end,
                     bool track_positions, match_result_t *result);
 
 /**
@@ -139,7 +140,7 @@ uint64_t kmp_search(const char *text_start, size_t text_len, const char *pattern
  */
 uint64_t regex_search(const char *text_start, size_t text_len, const regex_t *compiled_regex,
                       size_t report_limit_offset, bool count_lines_mode,
-                      uint64_t *line_match_count, size_t *last_counted_line_start,
+                      uint64_t *line_match_count, size_t *last_counted_line_start, size_t *last_matched_line_end,
                       bool track_positions, match_result_t *result);
 
 /* --- SIMD Placeholders/Implementations --- */
@@ -150,7 +151,7 @@ uint64_t regex_search(const char *text_start, size_t text_len, const regex_t *co
  */
 uint64_t simd_sse42_search(const char *text_start, size_t text_len, const char *pattern, size_t pattern_len,
                            bool case_sensitive, size_t report_limit_offset, bool count_lines_mode,
-                           uint64_t *line_match_count, size_t *last_counted_line_start,
+                           uint64_t *line_match_count, size_t *last_counted_line_start, size_t *last_matched_line_end,
                            bool track_positions, match_result_t *result);
 #endif
 
@@ -161,7 +162,7 @@ uint64_t simd_sse42_search(const char *text_start, size_t text_len, const char *
  */
 uint64_t simd_avx2_search(const char *text_start, size_t text_len, const char *pattern, size_t pattern_len,
                           bool case_sensitive, size_t report_limit_offset, bool count_lines_mode,
-                          uint64_t *line_match_count, size_t *last_counted_line_start,
+                          uint64_t *line_match_count, size_t *last_counted_line_start, size_t *last_matched_line_end,
                           bool track_positions, match_result_t *result);
 #endif
 
@@ -172,7 +173,7 @@ uint64_t simd_avx2_search(const char *text_start, size_t text_len, const char *p
  */
 uint64_t neon_search(const char *text_start, size_t text_len, const char *pattern, size_t pattern_len,
                      bool case_sensitive, size_t report_limit_offset, bool count_lines_mode,
-                     uint64_t *line_match_count, size_t *last_counted_line_start,
+                     uint64_t *line_match_count, size_t *last_counted_line_start, size_t *last_matched_line_end,
                      bool track_positions, match_result_t *result);
 #endif
 
