@@ -143,6 +143,16 @@ uint64_t regex_search(const char *text_start, size_t text_len, const regex_t *co
                       uint64_t *line_match_count, size_t *last_counted_line_start, size_t *last_matched_line_end,
                       bool track_positions, match_result_t *result);
 
+/**
+ * @brief Case-insensitive memory comparison utility function
+ *
+ * @param s1 First string to compare
+ * @param s2 Second string to compare
+ * @param n Number of bytes to compare
+ * @return true if memory regions are equal ignoring case, false otherwise
+ */
+bool memory_equals_case_insensitive(const char *s1, const char *s2, size_t n);
+
 /* --- SIMD Placeholders/Implementations --- */
 #ifdef __SSE4_2__
 /**

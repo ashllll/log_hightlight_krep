@@ -1003,7 +1003,14 @@ uint64_t simd_avx2_search(const char *text_start, size_t text_len, const char *p
             break;
         }
         size_t remaining_text = text_len - current_offset;
-        size_t advance_step = 1;
+
+        // Quick check for small remaining text
+        if (remaining_text < pattern_len)
+        {
+            break; // Not enough text left to match pattern
+        }
+
+        size_t advance_step = 1; // Default minimal advancement
         if (remaining_text >= 32)
         {
             __m256i ymm_text = _mm256_loadu_si256((const __m256i *)(text_start + current_offset));
@@ -1015,26 +1022,47 @@ uint64_t simd_avx2_search(const char *text_start, size_t text_len, const char *p
                 size_t match_start_abs = current_offset + index_low;
                 if (match_start_abs < report_limit_offset)
                 {
-                    total_match_count++;
-                    if (count_lines_mode)
+                    // Verify the match by checking all pattern characters
+                    bool full_match = true;
+                    if (match_start_abs + pattern_len <= text_len)
                     {
-                        if (match_start_abs >= *last_matched_line_end)
+                        for (size_t i = 0; i < pattern_len; i++)
                         {
-                            size_t ls = find_line_start(text_start, match_start_abs);
-                            if (*last_counted_line_start == SIZE_MAX || ls != *last_counted_line_start)
+                            if (text_start[match_start_abs + i] != pattern[i])
                             {
-                                (*line_match_count)++;
-                                *last_counted_line_start = ls;
-                                *last_matched_line_end = find_line_end(text_start, text_len, ls);
-                                if (*last_matched_line_end < text_len && text_start[*last_matched_line_end] == '\n')
-                                    (*last_matched_line_end)++;
+                                full_match = false;
+                                break;
                             }
                         }
                     }
-                    else if (track_positions && result)
+                    else
                     {
-                        if (!match_result_add(result, match_start_abs, match_start_abs + pattern_len))
-                            fprintf(stderr, "Warning: Failed to add match position (AVX2-Low).\n");
+                        full_match = false; // Pattern extends beyond text length
+                    }
+
+                    if (full_match)
+                    {
+                        total_match_count++;
+                        if (count_lines_mode)
+                        {
+                            if (match_start_abs >= *last_matched_line_end)
+                            {
+                                size_t ls = find_line_start(text_start, match_start_abs);
+                                if (*last_counted_line_start == SIZE_MAX || ls != *last_counted_line_start)
+                                {
+                                    (*line_match_count)++;
+                                    *last_counted_line_start = ls;
+                                    *last_matched_line_end = find_line_end(text_start, text_len, ls);
+                                    if (*last_matched_line_end < text_len && text_start[*last_matched_line_end] == '\n')
+                                        (*last_matched_line_end)++;
+                                }
+                            }
+                        }
+                        else if (track_positions && result)
+                        {
+                            if (!match_result_add(result, match_start_abs, match_start_abs + pattern_len))
+                                fprintf(stderr, "Warning: Failed to add match position (AVX2-Low).\n");
+                        }
                     }
                 }
                 else
@@ -1042,6 +1070,7 @@ uint64_t simd_avx2_search(const char *text_start, size_t text_len, const char *p
                     if (track_positions)
                         break;
                 }
+                // Always advance by at least pattern length after a match
                 current_offset = match_start_abs + pattern_len;
                 continue;
             }
@@ -1051,26 +1080,47 @@ uint64_t simd_avx2_search(const char *text_start, size_t text_len, const char *p
                 size_t match_start_abs = current_offset + 16 + index_high;
                 if (match_start_abs < report_limit_offset)
                 {
-                    total_match_count++;
-                    if (count_lines_mode)
+                    // Verify the match by checking all pattern characters
+                    bool full_match = true;
+                    if (match_start_abs + pattern_len <= text_len)
                     {
-                        if (match_start_abs >= *last_matched_line_end)
+                        for (size_t i = 0; i < pattern_len; i++)
                         {
-                            size_t ls = find_line_start(text_start, match_start_abs);
-                            if (*last_counted_line_start == SIZE_MAX || ls != *last_counted_line_start)
+                            if (text_start[match_start_abs + i] != pattern[i])
                             {
-                                (*line_match_count)++;
-                                *last_counted_line_start = ls;
-                                *last_matched_line_end = find_line_end(text_start, text_len, ls);
-                                if (*last_matched_line_end < text_len && text_start[*last_matched_line_end] == '\n')
-                                    (*last_matched_line_end)++;
+                                full_match = false;
+                                break;
                             }
                         }
                     }
-                    else if (track_positions && result)
+                    else
                     {
-                        if (!match_result_add(result, match_start_abs, match_start_abs + pattern_len))
-                            fprintf(stderr, "Warning: Failed to add match position (AVX2-High).\n");
+                        full_match = false; // Pattern extends beyond text length
+                    }
+
+                    if (full_match)
+                    {
+                        total_match_count++;
+                        if (count_lines_mode)
+                        {
+                            if (match_start_abs >= *last_matched_line_end)
+                            {
+                                size_t ls = find_line_start(text_start, match_start_abs);
+                                if (*last_counted_line_start == SIZE_MAX || ls != *last_counted_line_start)
+                                {
+                                    (*line_match_count)++;
+                                    *last_counted_line_start = ls;
+                                    *last_matched_line_end = find_line_end(text_start, text_len, ls);
+                                    if (*last_matched_line_end < text_len && text_start[*last_matched_line_end] == '\n')
+                                        (*last_matched_line_end)++;
+                                }
+                            }
+                        }
+                        else if (track_positions && result)
+                        {
+                            if (!match_result_add(result, match_start_abs, match_start_abs + pattern_len))
+                                fprintf(stderr, "Warning: Failed to add match position (AVX2-High).\n");
+                        }
                     }
                 }
                 else
@@ -1078,10 +1128,13 @@ uint64_t simd_avx2_search(const char *text_start, size_t text_len, const char *p
                     if (track_positions)
                         break;
                 }
+                // Always advance by at least pattern length after a match
                 current_offset = match_start_abs + pattern_len;
                 continue;
             }
-            advance_step = (32 >= pattern_len) ? (32 - pattern_len + 1) : 1;
+            // No match found in this 32-byte chunk, advance to check the next chunk
+            // Fixed: Ensure we don't skip potential matches that cross chunk boundaries
+            advance_step = pattern_len <= 16 ? 16 : 1;
             current_offset += advance_step;
         }
         else if (remaining_text >= 16)
@@ -1093,26 +1146,47 @@ uint64_t simd_avx2_search(const char *text_start, size_t text_len, const char *p
                 size_t match_start_abs = current_offset + index;
                 if (match_start_abs < report_limit_offset)
                 {
-                    total_match_count++;
-                    if (count_lines_mode)
+                    // Verify the match by checking all pattern characters
+                    bool full_match = true;
+                    if (match_start_abs + pattern_len <= text_len)
                     {
-                        if (match_start_abs >= *last_matched_line_end)
+                        for (size_t i = 0; i < pattern_len; i++)
                         {
-                            size_t ls = find_line_start(text_start, match_start_abs);
-                            if (*last_counted_line_start == SIZE_MAX || ls != *last_counted_line_start)
+                            if (text_start[match_start_abs + i] != pattern[i])
                             {
-                                (*line_match_count)++;
-                                *last_counted_line_start = ls;
-                                *last_matched_line_end = find_line_end(text_start, text_len, ls);
-                                if (*last_matched_line_end < text_len && text_start[*last_matched_line_end] == '\n')
-                                    (*last_matched_line_end)++;
+                                full_match = false;
+                                break;
                             }
                         }
                     }
-                    else if (track_positions && result)
+                    else
                     {
-                        if (!match_result_add(result, match_start_abs, match_start_abs + pattern_len))
-                            fprintf(stderr, "Warning: Failed to add match position (AVX2-SSE).\n");
+                        full_match = false; // Pattern extends beyond text length
+                    }
+
+                    if (full_match)
+                    {
+                        total_match_count++;
+                        if (count_lines_mode)
+                        {
+                            if (match_start_abs >= *last_matched_line_end)
+                            {
+                                size_t ls = find_line_start(text_start, match_start_abs);
+                                if (*last_counted_line_start == SIZE_MAX || ls != *last_counted_line_start)
+                                {
+                                    (*line_match_count)++;
+                                    *last_counted_line_start = ls;
+                                    *last_matched_line_end = find_line_end(text_start, text_len, ls);
+                                    if (*last_matched_line_end < text_len && text_start[*last_matched_line_end] == '\n')
+                                        (*last_matched_line_end)++;
+                                }
+                            }
+                        }
+                        else if (track_positions && result)
+                        {
+                            if (!match_result_add(result, match_start_abs, match_start_abs + pattern_len))
+                                fprintf(stderr, "Warning: Failed to add match position (AVX2-SSE).\n");
+                        }
                     }
                 }
                 else
@@ -1120,14 +1194,18 @@ uint64_t simd_avx2_search(const char *text_start, size_t text_len, const char *p
                     if (track_positions)
                         break;
                 }
+                // Always advance by at least pattern length after a match
                 current_offset = match_start_abs + pattern_len;
                 continue;
             }
-            advance_step = (16 >= pattern_len) ? (16 - pattern_len + 1) : 1;
+            // No match found in this 16-byte chunk, advance to check the next chunk
+            // Fixed: Ensure we don't skip potential matches that cross chunk boundaries
+            advance_step = pattern_len <= 8 ? 8 : 1;
             current_offset += advance_step;
         }
         else
         {
+            // For small remaining text, use Boyer-Moore directly
             size_t remaining_limit = (report_limit_offset > current_offset) ? (report_limit_offset - current_offset) : 0;
             uint64_t start_match_count_in_result = result ? result->count : 0;
             uint64_t tail_matches = boyer_moore_search(text_start + current_offset, remaining_text, pattern, pattern_len, case_sensitive, remaining_limit, count_lines_mode, line_match_count, last_counted_line_start, last_matched_line_end, track_positions, result);
