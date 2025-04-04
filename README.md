@@ -1,6 +1,6 @@
 # K(r)ep - A high-performance string search utility
 
-![Version](https://img.shields.io/badge/version-0.3.7-blue)
+![Version](https://img.shields.io/badge/version-0.4.0-blue)
 ![License](https://img.shields.io/badge/license-BSD-green)
 
 `Krep (krep)` is a blazingly fast string search utility designed for performance-critical applications. It implements multiple optimized search algorithms and leverages modern hardware capabilities to deliver maximum throughput.
@@ -35,6 +35,8 @@ https://dev.to/daviducolo/introducing-krep-building-a-high-performance-string-se
 - **Enhanced output options:**
   - Case-sensitive and case-insensitive matching (`-i`).
   - Direct string search (`-s`) in addition to file search.
+  - Pattern specification via `-e PATTERN`.
+  - Recursive directory search (`-r`) with automatic skipping of binary files and common non-code directories.
   - Match counting mode (`-c`).
   - Output only matched parts (`-o`), similar to grep -o.
   - Color highlighting of matched text with configurable behavior.
@@ -61,7 +63,11 @@ sudo make install
 ## Usage
 
 ```bash
-krep [OPTIONS] PATTERN FILE
+krep [OPTIONS] PATTERN [FILE | DIRECTORY]
+```
+or
+```bash
+krep [OPTIONS] -e PATTERN [FILE | DIRECTORY]
 ```
 or
 ```bash
@@ -82,17 +88,17 @@ krep -i "ERROR" large_logfile.log
 
 Search using a regular expression:
 ```bash
-krep -r "^[Ee]rror: .*" system.log
+krep -E "^[Ee]rror: .*" system.log
 ```
 
 Count occurrences without displaying matching lines:
 ```bash
-krep -c "TODO" *.c
+krep -c "TODO" source.c
 ```
 
 Print only matched parts:
 ```bash
-krep -o '[0-9]+' data.log | sort | uniq -c
+krep -o -E '[0-9]+' data.log | sort | uniq -c
 ```
 
 Search within a string instead of a file:
@@ -105,22 +111,39 @@ Display detailed search summary:
 krep -d "function" source.c
 ```
 
+Search recursively in a directory:
+```bash
+krep -r "TODO" ./project
+```
+
+Specify pattern that starts with dash:
+```bash
+krep -e "-pattern" file.txt
+```
+
+Case-insensitive recursive search:
+```bash
+krep -ir "error" .
+```
+
 ## Command Line Options
 
 - `-i` Case-insensitive search
 - `-c` Count matching lines only (don't print matching lines)
 - `-o` Only matching. Print only the matched parts of lines (like grep -o)
 - `-d` Display detailed search summary (ignored with -c or -o)
-- `-r` Treat PATTERN as a regular expression (POSIX Extended)
-- `-t NUM` Use NUM threads (currently ignored unless counting total matches)
-- `-s` Search in STRING_TO_SEARCH instead of a FILE
+- `-e PATTERN` Specify pattern. Useful for patterns starting with '-' or multiple patterns.
+- `-E` Interpret PATTERN as a POSIX Extended Regular Expression (ERE)
+- `-r` Recursively search directories. Skips binary files and common non-code directories
+- `-t NUM` Use NUM threads (currently ignored, single-threaded for accuracy)
+- `-s` Search in STRING_TO_SEARCH instead of a FILE or DIRECTORY
 - `--color[=WHEN]` Control color output ('always', 'never', 'auto'). Default: 'auto'
 - `-v` Display version information and exit
 - `-h` Display help message and exit
 
 ## Regular Expressions
 
-`krep` supports POSIX Extended Regular Expressions (ERE) with the `-r` flag, allowing you to perform complex pattern matching beyond simple string searches.
+`krep` supports POSIX Extended Regular Expressions (ERE) with the `-E` flag, allowing you to perform complex pattern matching beyond simple string searches.
 
 ### Basic Regex Syntax
 
@@ -142,37 +165,37 @@ krep -d "function" source.c
 
 Find all error messages (case-insensitive):
 ```bash
-krep -r -i "error:.*" log.txt
+krep -E -i "error:.*" log.txt
 ```
 
 Match IP addresses:
 ```bash
-krep -r "[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}" network.log
+krep -E "[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}" network.log
 ```
 
 Find all email addresses:
 ```bash
-krep -r "[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}" contacts.txt
+krep -E "[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}" contacts.txt
 ```
 
 Match lines that begin with "Date:":
 ```bash
-krep -r "^Date:" message.txt
+krep -E "^Date:" message.txt
 ```
 
 Find words that are exactly 5 characters long:
 ```bash
-krep -r "(^| )[a-zA-Z]{5}( |$)" text.txt
+krep -E "(^| )[a-zA-Z]{5}( |$)" text.txt
 ```
 
 Count occurrences of words starting with a vowel:
 ```bash
-krep -r -c "(^| )[aeiouAEIOU][a-zA-Z]*( |$)" document.txt
+krep -E -c "(^| )[aeiouAEIOU][a-zA-Z]*( |$)" document.txt
 ```
 
 Match both "color" and "colour" spellings:
 ```bash
-krep -r "colou?r" document.txt
+krep -E "colou?r" document.txt
 ```
 
 ### Performance Considerations
@@ -180,7 +203,6 @@ krep -r "colou?r" document.txt
 - Regular expression searches may be slower than literal string searches, especially for complex patterns
 - The regex engine uses POSIX ERE standards which do not support some features found in other regex flavors (like Perl or PCRE)
 - Overly complex regex patterns with excessive backtracking may impact performance on very large files
-- When searching large files with regex patterns, consider using the thread option (`-t`) to improve performance
 
 ### Limitations
 

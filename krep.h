@@ -1,7 +1,7 @@
 /* krep.h - Header file for krep utility
  *
  * Author: Davide Santangelo
- * Version: 0.3.7
+ * Version: 0.4.0
  * Year: 2025
  */
 
@@ -34,10 +34,51 @@ typedef struct
 } match_result_t;
 
 /* --- Public API --- */
+
+/**
+ * @brief Searches a single file for the given pattern.
+ *
+ * @param filename Path to the file.
+ * @param pattern The search pattern (literal or regex).
+ * @param pattern_len Length of the pattern.
+ * @param case_sensitive True for case-sensitive search.
+ * @param count_only True to only count matching lines (-c) or matches (-co).
+ * @param thread_count Number of threads to use (currently ignored, single-threaded).
+ * @param use_regex True if the pattern is a POSIX ERE.
+ * @return 0 if matches found, 1 if no matches found, 2 on error.
+ */
 int search_file(const char *filename, const char *pattern, size_t pattern_len, bool case_sensitive,
                 bool count_only, int thread_count, bool use_regex);
 
+/**
+ * @brief Searches a string in memory for the given pattern.
+ *
+ * @param pattern The search pattern (literal or regex).
+ * @param pattern_len Length of the pattern.
+ * @param text The string to search within.
+ * @param case_sensitive True for case-sensitive search.
+ * @param use_regex True if the pattern is a POSIX ERE.
+ * @param count_only True to only count matching lines (-c) or matches (-co).
+ * @return 0 if matches found, 1 if no matches found, 2 on error.
+ */
 int search_string(const char *pattern, size_t pattern_len, const char *text, bool case_sensitive, bool use_regex, bool count_only);
+
+/**
+ * @brief Recursively searches a directory for the given pattern.
+ *
+ * @param base_dir The starting directory path.
+ * @param pattern The search pattern (literal or regex).
+ * @param pattern_len Length of the pattern.
+ * @param case_sensitive True for case-sensitive search.
+ * @param count_only True to only count matching lines (-c) or matches (-co).
+ * @param thread_count Number of threads to use (currently ignored).
+ * @param use_regex True if the pattern is a POSIX ERE.
+ * @param global_match_found Pointer to a boolean flag that will be set to true if any match is found during the recursion.
+ * @return The total number of errors encountered during the recursive search.
+ */
+int search_directory_recursive(const char *base_dir, const char *pattern, size_t pattern_len,
+                               bool case_sensitive, bool count_only, int thread_count, bool use_regex,
+                               bool *global_match_found); // Added 8th parameter
 
 /* --- Match result management functions --- */
 match_result_t *match_result_init(uint64_t initial_capacity);
@@ -61,7 +102,7 @@ void print_usage(const char *program_name);
 
 /**
  * @brief Boyer-Moore-Horspool search algorithm implementation.
- * Returns total matches found. Optionally counts unique lines or tracks positions.
+ * Returns total matches found. Optionally counts unique lines or tracks positions. Finds non-overlapping matches.
  *
  * @param text_start Pointer to the start of the text buffer.
  * @param text_len Length of text buffer.
@@ -83,6 +124,7 @@ uint64_t boyer_moore_search(const char *text_start, size_t text_len, const char 
 
 /**
  * @brief Knuth-Morris-Pratt (KMP) search algorithm implementation.
+ * Finds non-overlapping matches.
  * (Parameters and return value same as boyer_moore_search)
  */
 uint64_t kmp_search(const char *text_start, size_t text_len, const char *pattern, size_t pattern_len,
@@ -92,6 +134,7 @@ uint64_t kmp_search(const char *text_start, size_t text_len, const char *pattern
 
 /**
  * @brief Rabin-Karp search algorithm implementation.
+ * Finds non-overlapping matches.
  * (Parameters and return value same as boyer_moore_search)
  */
 uint64_t rabin_karp_search(const char *text_start, size_t text_len, const char *pattern, size_t pattern_len,
@@ -101,6 +144,7 @@ uint64_t rabin_karp_search(const char *text_start, size_t text_len, const char *
 
 /**
  * @brief Regex-based search using a pre-compiled POSIX regex.
+ * Finds non-overlapping matches based on regex engine behavior.
  * (Parameters and return value similar to boyer_moore_search, uses compiled_regex instead of pattern/pattern_len)
  */
 uint64_t regex_search(const char *text_start, size_t text_len, const regex_t *compiled_regex,
@@ -140,22 +184,6 @@ uint64_t neon_search(const char *text_start, size_t text_len, const char *patter
                      bool case_sensitive, size_t report_limit_offset, bool count_lines_mode,
                      uint64_t *line_match_count, size_t *last_counted_line_start,
                      bool track_positions, match_result_t *result);
-
-// These were likely placeholders and don't match the updated signature, commenting out for now
-// uint64_t neon_search_short(...);
-// bool has_advanced_neon_features(void);
 #endif
-
-/* --- SIMD Constants (Consider moving if header gets too large) --- */
-// #define SIMD_MAX_LEN_SSE42 16
-// #define SIMD_MAX_LEN_AVX2 32
-// #define SIMD_MAX_LEN_NEON 16
-// #define SIMD_ALIGN_SSE 16
-// #define SIMD_ALIGN_AVX 32
-// #define SIMD_ALIGN_NEON 16
-
-// static inline bool is_aligned_for_simd(const void *ptr, size_t alignment) {
-//    return ((uintptr_t)ptr & (alignment - 1)) == 0;
-// }
 
 #endif /* KREP_H */
