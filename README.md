@@ -1,6 +1,6 @@
 # K(r)ep - A high-performance string search utility
 
-![Version](https://img.shields.io/badge/version-0.3.6-blue)
+![Version](https://img.shields.io/badge/version-0.3.7-blue)
 ![License](https://img.shields.io/badge/license-BSD-green)
 
 `Krep (krep)` is a blazingly fast string search utility designed for performance-critical applications. It implements multiple optimized search algorithms and leverages modern hardware capabilities to deliver maximum throughput.
@@ -29,14 +29,17 @@ https://dev.to/daviducolo/introducing-krep-building-a-high-performance-string-se
 - **Maximum performance:**
   - Memory alignment optimizations for SIMD operations
   - Cache-aware prefetching for reduced CPU stalls
-  - Memory-mapped file I/O (`mmap`) with optimized flags (`MAP_POPULATE` removed, relies on `MADV_SEQUENTIAL`) for potentially better throughput on large sequential reads.
-  - Multi-threaded parallel search for large files (adaptive thread count).
+  - Memory-mapped file I/O (`mmap`) with optimized flags for potentially better throughput on large sequential reads.
+  - Single-threaded mode for accurate position/line tracking (Multi-threaded support deprecated).
   - Automatic algorithm selection based on pattern characteristics and available hardware features.
-- **Flexible search options:**
+- **Enhanced output options:**
   - Case-sensitive and case-insensitive matching (`-i`).
   - Direct string search (`-s`) in addition to file search.
   - Match counting mode (`-c`).
-  - Match line printing (currently implemented for single-threaded regex search; non-regex and multi-threaded line printing is not yet implemented).
+  - Output only matched parts (`-o`), similar to grep -o.
+  - Color highlighting of matched text with configurable behavior.
+  - Optional detailed search summary (`-d`).
+  - Reports unique matching lines when printing lines (default mode).
 
 ## Installation
 
@@ -58,7 +61,11 @@ sudo make install
 ## Usage
 
 ```bash
-krep [OPTIONS] PATTERN [FILE]
+krep [OPTIONS] PATTERN FILE
+```
+or
+```bash
+krep [OPTIONS] -s PATTERN STRING_TO_SEARCH
 ```
 
 ### Examples
@@ -68,14 +75,14 @@ Search for "error" in a log file:
 krep "error" system.log
 ```
 
-Case-insensitive search with 8 threads:
+Case-insensitive search:
 ```bash
-krep -i -t 8 "ERROR" large_logfile.log
+krep -i "ERROR" large_logfile.log
 ```
 
 Search using a regular expression:
 ```bash
-krep -r "[Ee]rror: .*" system.log
+krep -r "^[Ee]rror: .*" system.log
 ```
 
 Count occurrences without displaying matching lines:
@@ -83,20 +90,33 @@ Count occurrences without displaying matching lines:
 krep -c "TODO" *.c
 ```
 
+Print only matched parts:
+```bash
+krep -o '[0-9]+' data.log | sort | uniq -c
+```
+
 Search within a string instead of a file:
 ```bash
 krep -s "Hello" "Hello world"
 ```
 
+Display detailed search summary:
+```bash
+krep -d "function" source.c
+```
+
 ## Command Line Options
 
 - `-i` Case-insensitive search
-- `-c` Count matches only (don't print matching lines)
-- `-r` Treat PATTERN as a regular expression
-- `-t NUM` Use NUM threads (default: 4)
-- `-s STRING` Search within STRING instead of a file
-- `-v` Display version information
-- `-h` Display help message
+- `-c` Count matching lines only (don't print matching lines)
+- `-o` Only matching. Print only the matched parts of lines (like grep -o)
+- `-d` Display detailed search summary (ignored with -c or -o)
+- `-r` Treat PATTERN as a regular expression (POSIX Extended)
+- `-t NUM` Use NUM threads (currently ignored unless counting total matches)
+- `-s` Search in STRING_TO_SEARCH instead of a FILE
+- `--color[=WHEN]` Control color output ('always', 'never', 'auto'). Default: 'auto'
+- `-v` Display version information and exit
+- `-h` Display help message and exit
 
 ## Regular Expressions
 
@@ -175,8 +195,8 @@ krep -r "colou?r" document.txt
 - **Memory-mapped I/O**: Avoids costly read() system calls
 - **Optimized algorithms**: Uses multiple string-matching algorithms optimized for different scenarios
 - **SIMD acceleration**: Utilizes SSE4.2, AVX2, or ARM Neon when available
-- **Multi-threading**: Processes large files in parallel chunks
 - **Minimal allocations**: Reduces memory overhead and fragmentation
+- **Efficient line tracking**: Optimized for reporting unique matching lines
 
 ## Benchmarks
 
@@ -199,7 +219,7 @@ Performance compared to standard tools (searching a 1GB text file for a common p
    - ARM NEON for patterns up to 16 characters (on ARM processors)
    - SIMD/AVX2 for medium-length patterns (when hardware supports it)
    - Boyer-Moore for medium-length patterns (when SIMD is unavailable)
-   - Rabin-Karp for longer patterns (> 16 characters)
+   - Rabin-Karp for longer patterns (> 32 characters)
 
 2. **Specialized optimizations**: 
    - Ultra-fast path for patterns of 4 bytes or less using ARM NEON
@@ -207,9 +227,9 @@ Performance compared to standard tools (searching a 1GB text file for a common p
    - Memory alignment for optimal SIMD performance
    - Strategic prefetching to minimize cache misses
 
-3. **Parallelization strategy**: For files larger than a dynamic threshold (`MIN_FILE_SIZE_FOR_THREADS` * thread_count), splits the search into chunks and processes them concurrently using pthreads. Thread count is adapted based on core count and workload.
+3. **Single-threaded efficiency**: Optimized for accurate line tracking and position reporting, with focused algorithms that maximize single-thread performance.
 
-4. **Memory efficiency**: Uses memory-mapped I/O (`mmap` with `MAP_PRIVATE` and `MADV_SEQUENTIAL`) to leverage the operating system's page cache efficiently for sequential reads.
+4. **Memory efficiency**: Uses memory-mapped I/O (`mmap` with `PROT_READ`, `MAP_PRIVATE` and `MADV_SEQUENTIAL`) to leverage the operating system's page cache efficiently for sequential reads.
 
 5. **Hardware acceleration**: Detects availability of SSE4.2, AVX2 and ARM Neon instructions at compile time (though full SIMD implementations are currently placeholders/fallbacks).
 

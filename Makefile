@@ -1,6 +1,6 @@
 # krep - A high-performance string search utility
 # Author: Davide Santangelo
-# Version: 0.3.6
+# Version: 0.3.7
 
 PREFIX ?= /usr/local
 BINDIR = $(PREFIX)/bin
@@ -9,90 +9,104 @@ BINDIR = $(PREFIX)/bin
 ENABLE_ARCH_DETECTION ?= 1
 
 CC = gcc
-CFLAGS = -Wall -Wextra -O3 -std=c11 -pthread -D_GNU_SOURCE -D_DEFAULT_SOURCE
-LDFLAGS = 
+# Base CFLAGS (without testing or specific arch flags initially)
+BASE_CFLAGS = -Wall -Wextra -O3 -std=c11 -pthread -D_GNU_SOURCE -D_DEFAULT_SOURCE
+LDFLAGS =
 
-# Architecture-specific optimizations
+# --- Architecture Detection (Keep as is) ---
+ARCH_CFLAGS =
 ifeq ($(ENABLE_ARCH_DETECTION),1)
-    # Detect OS first
     OS := $(shell uname -s)
-    
-    # Detect architecture type
     ARCH := $(shell uname -m)
-    
-    # Special case for PowerPC Macs which return "Power Macintosh" from uname -m
     ifeq ($(OS),Darwin)
         ifeq ($(ARCH),Power Macintosh)
-            # Use uname -p instead which returns "powerpc"
             ARCH := $(shell uname -p)
         endif
     endif
-    
-    # x86/x86_64 uses -march=native
     ifneq (,$(filter x86_64 i386 i686,$(ARCH)))
-        # Check for SIMD support on x86/x86_64
         ifeq ($(shell $(CC) -march=native -dM -E - < /dev/null 2>/dev/null | grep -q '__SSE4_2__' && echo yes),yes)
-            CFLAGS += -msse4.2
+            ARCH_CFLAGS += -msse4.2
         endif
-
         ifeq ($(shell $(CC) -march=native -dM -E - < /dev/null 2>/dev/null | grep -q '__AVX2__' && echo yes),yes)
-            CFLAGS += -mavx2
+            ARCH_CFLAGS += -mavx2
         endif
     endif
-    
-    # PowerPC uses -mcpu=native
     ifneq (,$(filter ppc ppc64 powerpc powerpc64,$(ARCH)))
-        # Check for SIMD support on PowerPC
         ifeq ($(shell $(CC) -mcpu=native -dM -E - < /dev/null 2>/dev/null | grep -q 'ALTIVEC' && echo yes),yes)
-            CFLAGS += -maltivec
+            ARCH_CFLAGS += -maltivec
         endif
     endif
-    
-    # ARM detection
     ifneq (,$(filter arm arm64 aarch64,$(ARCH)))
-        # Special case for Apple Silicon (macOS on ARM)
-        ifneq (,$(filter Darwin,$(OS)))
-            # Apple Silicon has NEON by default, no need for special flags
-            # Just define the feature macro if needed
-            CFLAGS += -D__ARM_NEON
+        # Define __ARM_NEON if detected or assumed (like on Apple Silicon)
+        NEON_DETECTED=no
+        ifeq ($(OS),Darwin)
+            # Assume NEON on Apple Silicon/macOS ARM
+            NEON_DETECTED=yes
         else
-            # For other ARM platforms (Linux, etc.), try to use appropriate flags
-            ifeq ($(shell $(CC) -mcpu=native -dM -E - < /dev/null 2>/dev/null | grep -q '__ARM_NEON' && echo yes),yes)
-                # Different ARM platforms may use different flag syntax
-                ifneq (,$(filter arm,$(ARCH)))
-                    CFLAGS += -mfpu=neon
-                endif
-                # For arm64/aarch64, NEON is typically standard and doesn't need -mfpu
+            # Check generic ARM
+             ifeq ($(shell $(CC) -mcpu=native -dM -E - < /dev/null 2>/dev/null | grep -q '__ARM_NEON' && echo yes),yes)
+                NEON_DETECTED=yes
+                # Add specific FPU flags only if needed (usually not for arm64)
+                # ifneq (,$(filter arm,$(ARCH)))
+                #    ARCH_CFLAGS += -mfpu=neon
+                # endif
             endif
+        endif
+        # Add the define if NEON is detected/assumed
+        ifeq ($(NEON_DETECTED),yes)
+             ARCH_CFLAGS += -D__ARM_NEON
         endif
     endif
 endif
+# --- End Arch Detection ---
+
+# Combine base and arch flags for normal compilation
+CFLAGS = $(BASE_CFLAGS) $(ARCH_CFLAGS)
+
+# Specific flags for testing compilation
+TEST_CFLAGS = $(CFLAGS) -DTESTING
 
 SRC = krep.c
-OBJ = $(SRC:.c=.o)
+OBJ = $(SRC:.c=.o) # krep.o (for main executable)
 EXEC = krep
 
-# Test files
-TEST_SRC = test/test_krep.c test/test_regex.c
-TEST_OBJ = $(TEST_SRC:.c=.o)
+# Test source files and their object files
+TEST_SRC_FILES = test/test_krep.c test/test_regex.c
+TEST_OBJ = $(TEST_SRC_FILES:.c=.o) # test/test_krep.o test/test_regex.o
 TEST_EXEC = test_krep
 
+# Define a separate object file for krep.c when compiled for testing
+KREP_TEST_OBJ = krep_test.o
+
+# Default target
 all: $(EXEC)
 
+# Rule to build the main executable
 $(EXEC): $(OBJ)
 	$(CC) $(CFLAGS) -o $(EXEC) $(OBJ) $(LDFLAGS)
 
-%.o: %.c
+# Rule to build the main krep.o (uses CFLAGS, includes main)
+$(OBJ): %.o: %.c krep.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
-# Fix test target to use proper variables
-test: CFLAGS += -DTESTING
-test: $(OBJ) $(TEST_OBJ) 
-	$(CC) $(CFLAGS) -o $(TEST_EXEC) $(TEST_OBJ) $(OBJ) $(LDFLAGS)
+# Rule to build test object files (uses TEST_CFLAGS)
+$(TEST_OBJ): test/%.o: test/%.c test/test_krep.h test/test_compat.h krep.h
+	$(CC) $(TEST_CFLAGS) -c $< -o $@
+
+# Rule to build krep.c specifically *for testing* (uses TEST_CFLAGS, excludes main)
+$(KREP_TEST_OBJ): krep.c krep.h
+	$(CC) $(TEST_CFLAGS) -c $< -o $@
+
+# Rule to build the test executable (links test objects + krep_test.o)
+$(TEST_EXEC): $(KREP_TEST_OBJ) $(TEST_OBJ)
+	$(CC) $(TEST_CFLAGS) -o $(TEST_EXEC) $^ $(LDFLAGS)
+
+# Target to run tests
+test: $(TEST_EXEC)
 	./$(TEST_EXEC)
 
 clean:
-	rm -f $(OBJ) $(EXEC) $(TEST_OBJ) $(TEST_EXEC) krep_test.o
+	rm -f $(OBJ) $(EXEC) $(TEST_OBJ) $(TEST_EXEC) $(KREP_TEST_OBJ)
 
 install: $(EXEC)
 	install -d $(DESTDIR)$(BINDIR)

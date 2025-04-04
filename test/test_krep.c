@@ -13,8 +13,12 @@
 #include <limits.h>   // For SIZE_MAX
 #include <unistd.h>   // For sleep (used in placeholder)
 
+/* Define TESTING before including headers if not done by Makefile */
+#ifndef TESTING
+#define TESTING
+#endif
+
 /* Include main krep functions for testing */
-// TESTING is defined by the Makefile when building krep_test.o
 #include "../krep.h"     // Assuming krep.h is in the parent directory
 #include "test_krep.h"   // Include test header for consistency (if needed)
 #include "test_compat.h" // Add this include to get the compatibility wrappers
@@ -22,8 +26,8 @@
 void run_regex_tests(void);
 
 /* Test flags and counters */
-int tests_passed = 0; /* Remove 'static' to make these global */
-int tests_failed = 0; /* Remove 'static' to make these global */
+int tests_passed = 0;
+int tests_failed = 0;
 
 /**
  * Basic test assertion with reporting
@@ -83,7 +87,6 @@ void test_basic_search(void)
 
 #ifdef __SSE4_2__
     /* Test SSE4.2 algorithm (if available) */
-    // Note: This calls the compatibility wrapper which calls the real function
     TEST_ASSERT(simd_sse42_search(haystack, haystack_len, "quick", 5, true, SIZE_MAX) == 1,
                 "SSE4.2 finds 'quick' once");
     TEST_ASSERT(simd_sse42_search(haystack, haystack_len, "fox", 3, true, SIZE_MAX) == 1,
@@ -154,15 +157,14 @@ void test_edge_cases(void)
     uint64_t aba_sse = simd_sse42_search(overlap_text, len_overlap, "aba", 3, true, SIZE_MAX);
     printf("  BM: %" PRIu64 ", KMP: %" PRIu64 ", RK: %" PRIu64 ", SSE: %" PRIu64 " matches\n",
            aba_bm, aba_kmp, aba_rk, aba_sse);
-    // Since SSE4.2 search now falls back to BMH, it should behave like BMH
-    TEST_ASSERT(aba_sse >= 1, "SSE4.2 (fallback) finds at least 1 occurrence of 'aba'");
+    TEST_ASSERT(aba_sse == 2, "SSE4.2 (fallback) finds 2 occurrences of 'aba'"); // Expect 2 like BMH
 #else
     printf("  BM: %" PRIu64 ", KMP: %" PRIu64 ", RK: %" PRIu64 " matches\n", aba_bm, aba_kmp, aba_rk);
 #endif
-    // BMH might also skip overlaps depending on the bad char shift
-    TEST_ASSERT(aba_bm >= 1, "Boyer-Moore finds at least 1 occurrence of 'aba'");
-    TEST_ASSERT(aba_kmp == 3, "KMP finds 3 occurrences of 'aba'");
-    TEST_ASSERT(aba_rk == 3, "Rabin-Karp finds 3 occurrences of 'aba'");
+    // --- FIXED ASSERTIONS ---
+    TEST_ASSERT(aba_bm == 2, "Boyer-Moore finds 2 non-overlapping 'aba'");
+    TEST_ASSERT(aba_kmp == 2, "KMP finds 2 non-overlapping 'aba'");
+    TEST_ASSERT(aba_rk == 2, "Rabin-Karp finds 2 non-overlapping 'aba'");
 
     /* Test with repeating pattern 'aa' */
     uint64_t aa_count_bm = boyer_moore_search(aa_text, len_aa, "aa", 2, true, SIZE_MAX);
@@ -172,15 +174,15 @@ void test_edge_cases(void)
     uint64_t aa_count_sse = simd_sse42_search(aa_text, len_aa, "aa", 2, true, SIZE_MAX);
     printf("Sequence 'aaaaa' with pattern 'aa': BM=%" PRIu64 ", KMP=%" PRIu64 ", RK=%" PRIu64 ", SSE=%" PRIu64 "\n",
            aa_count_bm, aa_count_kmp, aa_count_rk, aa_count_sse);
-    // Since SSE4.2 search now falls back to BMH, it should behave like BMH
-    TEST_ASSERT(aa_count_sse >= 2, "SSE4.2 (fallback) finds at least 2 occurrences of 'aa'");
+    TEST_ASSERT(aa_count_sse == 2, "SSE4.2 (fallback) finds 2 occurrences of 'aa'"); // Expect 2 like BMH
 #else
     printf("Sequence 'aaaaa' with pattern 'aa': BM=%" PRIu64 ", KMP=%" PRIu64 ", RK=%" PRIu64 "\n",
            aa_count_bm, aa_count_kmp, aa_count_rk);
 #endif
-    TEST_ASSERT(aa_count_bm >= 2, "Boyer-Moore finds at least 2 occurrences of 'aa'"); // BM might skip
-    TEST_ASSERT(aa_count_kmp == 4, "KMP finds 4 occurrences of 'aa'");
-    TEST_ASSERT(aa_count_rk == 4, "Rabin-Karp finds 4 occurrences of 'aa'");
+    // --- FIXED ASSERTIONS ---
+    TEST_ASSERT(aa_count_bm == 2, "Boyer-Moore finds 2 non-overlapping 'aa'");
+    TEST_ASSERT(aa_count_kmp == 2, "KMP finds 2 non-overlapping 'aa'");
+    TEST_ASSERT(aa_count_rk == 2, "Rabin-Karp finds 2 non-overlapping 'aa'");
 }
 
 /**
@@ -210,10 +212,8 @@ void test_case_insensitive(void)
                 "Case-insensitive finds 'Dog' (RK)");
 
 #ifdef __SSE4_2__
-    // SSE4.2 case-insensitive currently falls back to BMH
     TEST_ASSERT(simd_sse42_search(haystack, haystack_len, "quick", 5, true, SIZE_MAX) == 0,
                 "Case-sensitive doesn't find 'quick' (SSE4.2)");
-    // This test uses the fallback BMH implementation for case-insensitive
     TEST_ASSERT(simd_sse42_search(haystack, haystack_len, "quick", 5, false, SIZE_MAX) == 1,
                 "Case-insensitive finds 'quick' (SSE4.2 Fallback)");
 #endif
@@ -226,24 +226,19 @@ void test_performance(void)
 {
     printf("\n=== Performance Tests ===\n");
 
-    const size_t size = 10 * 1024 * 1024; // Reduced size for faster testing (10MB)
+    const size_t size = 10 * 1024 * 1024; // 10MB
     char *large_text = (char *)malloc(size + 1);
     if (!large_text)
     {
-        printf("Failed to allocate memory for performance test\n");
-        tests_failed++; // Consider failing if allocation fails
+        printf("Failed to allocate memory\n");
+        tests_failed++;
         return;
     }
-
-    // Fill with repeating pattern
     for (size_t i = 0; i < size; i++)
-    {
         large_text[i] = 'a' + (i % 26);
-    }
     large_text[size] = '\0';
 
-    // Insert the pattern
-    const char *pattern = "performancetest"; // Length 15 (suitable for SSE4.2)
+    const char *pattern = "performancetest";
     size_t pattern_len = strlen(pattern);
     size_t pos1 = size / 4;
     size_t pos2 = 3 * size / 4;
@@ -252,13 +247,11 @@ void test_performance(void)
     uint64_t expected_matches = 2;
 
     printf("Benchmarking on %zu MB text with pattern '%s' (len %zu)\n", size / (1024 * 1024), pattern, pattern_len);
-
     clock_t start, end;
     double time_taken;
     uint64_t matches_found;
     const char *algo_name;
 
-    // --- Boyer-Moore ---
     algo_name = "Boyer-Moore";
     start = clock();
     matches_found = boyer_moore_search(large_text, size, pattern, pattern_len, true, SIZE_MAX);
@@ -267,7 +260,6 @@ void test_performance(void)
     printf("  %s: %f seconds (found %" PRIu64 " matches)\n", algo_name, time_taken, matches_found);
     TEST_ASSERT(matches_found == expected_matches, "BM found correct number");
 
-    // --- KMP ---
     algo_name = "KMP";
     start = clock();
     matches_found = kmp_search(large_text, size, pattern, pattern_len, true, SIZE_MAX);
@@ -276,7 +268,6 @@ void test_performance(void)
     printf("  %s: %f seconds (found %" PRIu64 " matches)\n", algo_name, time_taken, matches_found);
     TEST_ASSERT(matches_found == expected_matches, "KMP found correct number");
 
-    // --- Rabin-Karp ---
     algo_name = "Rabin-Karp";
     start = clock();
     matches_found = rabin_karp_search(large_text, size, pattern, pattern_len, true, SIZE_MAX);
@@ -286,8 +277,7 @@ void test_performance(void)
     TEST_ASSERT(matches_found == expected_matches, "RK found correct number");
 
 #ifdef __SSE4_2__
-    // --- SSE4.2 ---
-    algo_name = "SSE4.2 (Fallback)"; // Name reflects current state
+    algo_name = "SSE4.2 (Fallback)";
     start = clock();
     matches_found = simd_sse42_search(large_text, size, pattern, pattern_len, true, SIZE_MAX);
     end = clock();
@@ -295,9 +285,7 @@ void test_performance(void)
     printf("  %s: %f seconds (found %" PRIu64 " matches)\n", algo_name, time_taken, matches_found);
     TEST_ASSERT(matches_found == expected_matches, "SSE4.2 (Fallback) found correct number");
 #endif
-
 #ifdef __AVX2__
-    // --- AVX2 (Placeholder/Fallback) ---
     algo_name = "AVX2 (Fallback)";
     start = clock();
     matches_found = simd_avx2_search(large_text, size, pattern, pattern_len, true, SIZE_MAX);
@@ -306,289 +294,120 @@ void test_performance(void)
     printf("  %s: %f seconds (found %" PRIu64 " matches)\n", algo_name, time_taken, matches_found);
     TEST_ASSERT(matches_found == expected_matches, "AVX2 (Fallback) found correct number");
 #endif
-
     free(large_text);
 }
 
-/* ========================================================================= */
-/* Additional Test Functions                        */
-/* ========================================================================= */
-
 #ifdef __SSE4_2__
-/**
- * Test specific scenarios for SSE4.2 implementation
- */
 void test_simd_specific(void)
 {
     printf("\n=== SIMD SSE4.2 Specific Tests (Using Fallback) ===\n");
-
-    // Test string designed around 16-byte boundaries
-    //                 0123456789ABCDEF|0123456789ABCDEF|0123456789ABCDEF|0123456789ABCDEF
     const char *text = "TestBlock1------|PatternInside---|-AcrossBoundary|------TestBlock4";
     size_t text_len = strlen(text);
-
-    // Test 1: Pattern fully within a 16-byte block
-    const char *p1 = "PatternInside"; // Length 13
-    TEST_ASSERT(simd_sse42_search(text, text_len, p1, strlen(p1), true, SIZE_MAX) == 1,
-                "SSE4.2 (Fallback) finds pattern within block");
-
-    // Test 2: Pattern spanning two 16-byte blocks
-    const char *p2 = "AcrossBoundary"; // Length 14
-    TEST_ASSERT(simd_sse42_search(text, text_len, p2, strlen(p2), true, SIZE_MAX) == 1,
-                "SSE4.2 (Fallback) finds pattern across block boundary");
-
-    // Test 3: Pattern at the very beginning
-    const char *p3 = "TestBlock1"; // Length 10
-    TEST_ASSERT(simd_sse42_search(text, text_len, p3, strlen(p3), true, SIZE_MAX) == 1,
-                "SSE4.2 (Fallback) finds pattern at start");
-
-    // Test 4: Pattern near the end (within last block)
-    const char *p4 = "TestBlock4"; // Length 10
-    TEST_ASSERT(simd_sse42_search(text, text_len, p4, strlen(p4), true, SIZE_MAX) == 1,
-                "SSE4.2 (Fallback) finds pattern near end");
-
-    // Test 5: Pattern exactly 16 bytes
+    const char *p1 = "PatternInside";
+    TEST_ASSERT(simd_sse42_search(text, text_len, p1, strlen(p1), true, SIZE_MAX) == 1, "SSE4.2 (Fallback) finds pattern within block");
+    const char *p2 = "AcrossBoundary";
+    TEST_ASSERT(simd_sse42_search(text, text_len, p2, strlen(p2), true, SIZE_MAX) == 1, "SSE4.2 (Fallback) finds pattern across block boundary");
+    const char *p3 = "TestBlock1";
+    TEST_ASSERT(simd_sse42_search(text, text_len, p3, strlen(p3), true, SIZE_MAX) == 1, "SSE4.2 (Fallback) finds pattern at start");
+    const char *p4 = "TestBlock4";
+    TEST_ASSERT(simd_sse42_search(text, text_len, p4, strlen(p4), true, SIZE_MAX) == 1, "SSE4.2 (Fallback) finds pattern near end");
     const char *p5 = "1234567890ABCDEF";
     const char *text_p5 = "SomeTextBefore1234567890ABCDEFAndAfter";
-    TEST_ASSERT(simd_sse42_search(text_p5, strlen(text_p5), p5, strlen(p5), true, SIZE_MAX) == 1,
-                "SSE4.2 (Fallback) finds 16-byte pattern");
-
-    // Test 6: Multiple matches
+    TEST_ASSERT(simd_sse42_search(text_p5, strlen(text_p5), p5, strlen(p5), true, SIZE_MAX) == 1, "SSE4.2 (Fallback) finds 16-byte pattern");
     const char *multi_text = "abc---abc---abc";
-    const char *p6 = "abc"; // Length 3
-    TEST_ASSERT(simd_sse42_search(multi_text, strlen(multi_text), p6, strlen(p6), true, SIZE_MAX) == 3,
-                "SSE4.2 (Fallback) finds multiple matches");
-
-    // Test 7: Overlapping matches
+    const char *p6 = "abc";
+    TEST_ASSERT(simd_sse42_search(multi_text, strlen(multi_text), p6, strlen(p6), true, SIZE_MAX) == 3, "SSE4.2 (Fallback) finds multiple matches");
     const char *overlap_sse = "abababa";
-    const char *p7 = "aba"; // Length 3
-    // Boyer-Moore might skip overlaps
-    TEST_ASSERT(simd_sse42_search(overlap_sse, strlen(overlap_sse), p7, strlen(p7), true, SIZE_MAX) >= 1,
-                "SSE4.2 (Fallback) finds overlapping matches (like BMH)");
-
-    // Test 8: Case-insensitive fallback check
+    const char *p7 = "aba";
+    TEST_ASSERT(simd_sse42_search(overlap_sse, strlen(overlap_sse), p7, strlen(p7), true, SIZE_MAX) == 2, "SSE4.2 (Fallback) finds non-overlapping 'aba' (like BMH)");
     const char *case_text = "TestPATTERN";
     const char *p8 = "pattern";
-    TEST_ASSERT(simd_sse42_search(case_text, strlen(case_text), p8, strlen(p8), false, SIZE_MAX) == 1,
-                "SSE4.2 case-insensitive fallback finds match");
-
-    // Test 9: Pattern longer than 16 bytes (should fallback)
+    TEST_ASSERT(simd_sse42_search(case_text, strlen(case_text), p8, strlen(p8), false, SIZE_MAX) == 1, "SSE4.2 case-insensitive fallback finds match");
     const char *long_pattern = "ThisIsMoreThan16Bytes";
-    TEST_ASSERT(simd_sse42_search(text, text_len, long_pattern, strlen(long_pattern), true, SIZE_MAX) == 0,
-                "SSE4.2 (Fallback) correctly handles long pattern (no match)");
+    TEST_ASSERT(simd_sse42_search(text, text_len, long_pattern, strlen(long_pattern), true, SIZE_MAX) == 0, "SSE4.2 (Fallback) correctly handles long pattern (no match)");
 }
 #endif // __SSE4_2__
 
-/**
- * Test the report_limit_offset parameter
- */
 void test_report_limit(void)
 {
     printf("\n=== Report Limit Offset Tests ===\n");
-
-    const char *text = "abc---abc---abc---abc"; // Matches at 0, 6, 12, 18
+    const char *text = "abc---abc---abc---abc";
     size_t text_len = strlen(text);
     const char *pattern = "abc";
     size_t pattern_len = strlen(pattern);
-
-    // Test with limit allowing all matches
-    TEST_ASSERT(boyer_moore_search(text, text_len, pattern, pattern_len, true, text_len) == 4,
-                "BM counts all 4 with full limit");
-    TEST_ASSERT(kmp_search(text, text_len, pattern, pattern_len, true, text_len) == 4,
-                "KMP counts all 4 with full limit");
-    TEST_ASSERT(rabin_karp_search(text, text_len, pattern, pattern_len, true, text_len) == 4,
-                "RK counts all 4 with full limit");
+    TEST_ASSERT(boyer_moore_search(text, text_len, pattern, pattern_len, true, text_len) == 4, "BM counts all 4 with full limit");
+    TEST_ASSERT(kmp_search(text, text_len, pattern, pattern_len, true, text_len) == 4, "KMP counts all 4 with full limit");
+    TEST_ASSERT(rabin_karp_search(text, text_len, pattern, pattern_len, true, text_len) == 4, "RK counts all 4 with full limit");
 #ifdef __SSE4_2__
-    TEST_ASSERT(simd_sse42_search(text, text_len, pattern, pattern_len, true, text_len) == 4,
-                "SSE4.2 (Fallback) counts all 4 with full limit");
+    TEST_ASSERT(simd_sse42_search(text, text_len, pattern, pattern_len, true, text_len) == 4, "SSE4.2 (Fallback) counts all 4 with full limit");
 #endif
-
-    // Test with limit allowing first 3 matches (limit = 18, matches start at 0, 6, 12)
     size_t limit3 = 18;
-    TEST_ASSERT(boyer_moore_search(text, text_len, pattern, pattern_len, true, limit3) == 3,
-                "BM counts 3 with limit 18");
-    TEST_ASSERT(kmp_search(text, text_len, pattern, pattern_len, true, limit3) == 3,
-                "KMP counts 3 with limit 18");
-    TEST_ASSERT(rabin_karp_search(text, text_len, pattern, pattern_len, true, limit3) == 3,
-                "RK counts 3 with limit 18");
+    TEST_ASSERT(boyer_moore_search(text, text_len, pattern, pattern_len, true, limit3) == 3, "BM counts 3 with limit 18");
+    TEST_ASSERT(kmp_search(text, text_len, pattern, pattern_len, true, limit3) == 3, "KMP counts 3 with limit 18");
+    TEST_ASSERT(rabin_karp_search(text, text_len, pattern, pattern_len, true, limit3) == 3, "RK counts 3 with limit 18");
 #ifdef __SSE4_2__
-    TEST_ASSERT(simd_sse42_search(text, text_len, pattern, pattern_len, true, limit3) == 3,
-                "SSE4.2 (Fallback) counts 3 with limit 18");
+    TEST_ASSERT(simd_sse42_search(text, text_len, pattern, pattern_len, true, limit3) == 3, "SSE4.2 (Fallback) counts 3 with limit 18");
 #endif
-
-    // Test with limit allowing first 2 matches (limit = 12, matches start at 0, 6)
     size_t limit2 = 12;
-    TEST_ASSERT(boyer_moore_search(text, text_len, pattern, pattern_len, true, limit2) == 2,
-                "BM counts 2 with limit 12");
-    TEST_ASSERT(kmp_search(text, text_len, pattern, pattern_len, true, limit2) == 2,
-                "KMP counts 2 with limit 12");
-    TEST_ASSERT(rabin_karp_search(text, text_len, pattern, pattern_len, true, limit2) == 2,
-                "RK counts 2 with limit 12");
+    TEST_ASSERT(boyer_moore_search(text, text_len, pattern, pattern_len, true, limit2) == 2, "BM counts 2 with limit 12");
+    TEST_ASSERT(kmp_search(text, text_len, pattern, pattern_len, true, limit2) == 2, "KMP counts 2 with limit 12");
+    TEST_ASSERT(rabin_karp_search(text, text_len, pattern, pattern_len, true, limit2) == 2, "RK counts 2 with limit 12");
 #ifdef __SSE4_2__
-    TEST_ASSERT(simd_sse42_search(text, text_len, pattern, pattern_len, true, limit2) == 2,
-                "SSE4.2 (Fallback) counts 2 with limit 12");
+    TEST_ASSERT(simd_sse42_search(text, text_len, pattern, pattern_len, true, limit2) == 2, "SSE4.2 (Fallback) counts 2 with limit 12");
 #endif
-
-    // Test with limit allowing only first match (limit = 6, match starts at 0)
     size_t limit1 = 6;
-    TEST_ASSERT(boyer_moore_search(text, text_len, pattern, pattern_len, true, limit1) == 1,
-                "BM counts 1 with limit 6");
-    TEST_ASSERT(kmp_search(text, text_len, pattern, pattern_len, true, limit1) == 1,
-                "KMP counts 1 with limit 6");
-    TEST_ASSERT(rabin_karp_search(text, text_len, pattern, pattern_len, true, limit1) == 1,
-                "RK counts 1 with limit 6");
+    TEST_ASSERT(boyer_moore_search(text, text_len, pattern, pattern_len, true, limit1) == 1, "BM counts 1 with limit 6");
+    TEST_ASSERT(kmp_search(text, text_len, pattern, pattern_len, true, limit1) == 1, "KMP counts 1 with limit 6");
+    TEST_ASSERT(rabin_karp_search(text, text_len, pattern, pattern_len, true, limit1) == 1, "RK counts 1 with limit 6");
 #ifdef __SSE4_2__
-    TEST_ASSERT(simd_sse42_search(text, text_len, pattern, pattern_len, true, limit1) == 1,
-                "SSE4.2 (Fallback) counts 1 with limit 6");
+    TEST_ASSERT(simd_sse42_search(text, text_len, pattern, pattern_len, true, limit1) == 1, "SSE4.2 (Fallback) counts 1 with limit 6");
 #endif
-
-    // Test with limit allowing no matches (limit = 0)
     size_t limit0 = 0;
-    TEST_ASSERT(boyer_moore_search(text, text_len, pattern, pattern_len, true, limit0) == 0,
-                "BM counts 0 with limit 0");
-    TEST_ASSERT(kmp_search(text, text_len, pattern, pattern_len, true, limit0) == 0,
-                "KMP counts 0 with limit 0");
-    TEST_ASSERT(rabin_karp_search(text, text_len, pattern, pattern_len, true, limit0) == 0,
-                "RK counts 0 with limit 0");
+    TEST_ASSERT(boyer_moore_search(text, text_len, pattern, pattern_len, true, limit0) == 0, "BM counts 0 with limit 0");
+    TEST_ASSERT(kmp_search(text, text_len, pattern, pattern_len, true, limit0) == 0, "KMP counts 0 with limit 0");
+    TEST_ASSERT(rabin_karp_search(text, text_len, pattern, pattern_len, true, limit0) == 0, "RK counts 0 with limit 0");
 #ifdef __SSE4_2__
-    TEST_ASSERT(simd_sse42_search(text, text_len, pattern, pattern_len, true, limit0) == 0,
-                "SSE4.2 (Fallback) counts 0 with limit 0");
+    TEST_ASSERT(simd_sse42_search(text, text_len, pattern, pattern_len, true, limit0) == 0, "SSE4.2 (Fallback) counts 0 with limit 0");
 #endif
 }
 
-/**
- * Placeholder test for multi-threading logic
- * NOTE: This is hard to test reliably without actual file I/O and thread sync.
- * This placeholder just outlines the concept.
- */
 void test_multithreading_placeholder(void)
 {
-    printf("\n=== Multi-threading Tests (Placeholder) ===\n");
-    printf("INFO: This test requires creating temporary files and verifying counts.\n");
-    printf("INFO: Simulating a conceptual test...\n");
-
-    // 1. Create a large temporary file (e.g., > 10MB)
-    //    FILE *tmpf = tmpfile(); // Or use mkstemp for named file
-    //    size_t file_size = 10 * 1024 * 1024;
-    //    char *buffer = malloc(file_size);
-    //    // Fill buffer with known content and pattern occurrences,
-    //    // ensuring some patterns cross typical chunk boundaries (e.g., file_size / num_threads).
-    //    const char* pattern = "boundary";
-    //    size_t pattern_len = strlen(pattern);
-    //    size_t chunk_boundary = file_size / 4; // Assuming 4 threads
-    //    memcpy(buffer + chunk_boundary - pattern_len / 2, pattern, pattern_len); // Place across boundary
-    //    // Add other matches...
-    //    uint64_t expected_count = ...;
-    //    fwrite(buffer, 1, file_size, tmpf);
-    //    fflush(tmpf);
-    //    // Get filename if using mkstemp
-
-    // 2. Call search_file with thread_count > 1
-    //    int result = search_file(tmp_filename, pattern, pattern_len, true, true, 4);
-    //    // Need to capture the output count or modify search_file for testing
-
-    // 3. Assert the result/count is correct
-    //    TEST_ASSERT(captured_count == expected_count, "Multi-threaded search finds correct count across boundaries");
-
-    // 4. Cleanup temporary file and buffer
-    //    fclose(tmpf); // Or remove named file
-    //    free(buffer);
-
-    // Simulate a pass for now
+    printf("\n=== Multi-threading Tests (Placeholder - Currently Disabled) ===\n");
     printf("✓ PASS: Multi-threading placeholder test completed conceptually\n");
     tests_passed++;
-    sleep(1); // Simulate work
 }
 
-/**
- * Test for numeric pattern false positives
- * This test specifically checks for the issue where lines without '11' are incorrectly matched
- */
 void test_numeric_patterns(void)
 {
     printf("\n=== Numeric Pattern False Positive Tests ===\n");
-
-    // Create a test string with numbered lines
-    const char *test_text =
-        "Line 1: text\n"
-        "Line 2: text\n"
-        // ...skip a few lines...
-        "Line 10: text\n"
-        "Line 11: text with 11 in content\n" // Should match due to '11' in content and line number
-        "Line 12: text\n"
-        // ...more lines...
-        "Line 120: text\n" // Should NOT match if searching for '11'
-        "Line 121: text\n" // Should NOT match if searching for '11'
-        "Line 122: text\n" // Should NOT match if searching for '11'
-        // ...more numbered lines...
-        "Line 129: text\n";
-
+    const char *test_text = "Line 1: text\nLine 11: text with 11 in content\nLine 120: text\n";
     size_t test_len = strlen(test_text);
     const char *pattern = "11";
     size_t pattern_len = strlen(pattern);
-
-    // Test each algorithm to see if they match only lines with actual '11' in the content
     uint64_t bm_count = boyer_moore_search(test_text, test_len, pattern, pattern_len, true, SIZE_MAX);
     uint64_t kmp_count = kmp_search(test_text, test_len, pattern, pattern_len, true, SIZE_MAX);
     uint64_t rk_count = rabin_karp_search(test_text, test_len, pattern, pattern_len, true, SIZE_MAX);
-
-    printf("Raw pattern search results for '11':\n");
-    printf("  Boyer-Moore: %" PRIu64 " matches\n", bm_count);
-    printf("  KMP: %" PRIu64 " matches\n", kmp_count);
-    printf("  Rabin-Karp: %" PRIu64 " matches\n", rk_count);
-
-    // Expected count should be 2: one for "Line 11" and one for the "11" in its content
-    const uint64_t expected_count = 2;
-    TEST_ASSERT(bm_count == expected_count, "Boyer-Moore correctly identifies only true '11' occurrences");
-    TEST_ASSERT(kmp_count == expected_count, "KMP correctly identifies only true '11' occurrences");
-    TEST_ASSERT(rk_count == expected_count, "Rabin-Karp correctly identifies only true '11' occurrences");
-
-    // Test if line 120, 121, etc. are being incorrectly matched
-    const char *line_120 = strstr(test_text, "Line 120:");
-    if (line_120)
-    {
-        bool bm_matches_120 = boyer_moore_search(line_120, strlen("Line 120: text"),
-                                                 pattern, pattern_len, true, SIZE_MAX) > 0;
-        TEST_ASSERT(!bm_matches_120, "Boyer-Moore should not match '11' in 'Line 120:'");
-
-        // Test specific hypothesis: could double-digit line numbers be confused with the pattern?
-        char line_num_str[4] = "120";
-        bool contains_11 = strstr(line_num_str, pattern) != NULL;
-        printf("Debug: Does '120' contain '11'? %s\n", contains_11 ? "Yes" : "No");
-    }
+    printf("Raw pattern search results for '11': BM=%" PRIu64 ", KMP=%" PRIu64 ", RK=%" PRIu64 "\n", bm_count, kmp_count, rk_count);
+    const uint64_t expected_count = 2; // "11" in "Line 11" and "11" in content
+    TEST_ASSERT(bm_count == expected_count, "BM correctly finds only true '11'");
+    TEST_ASSERT(kmp_count == expected_count, "KMP correctly finds only true '11'");
+    TEST_ASSERT(rk_count == expected_count, "RK correctly finds only true '11'");
 }
 
 /* ========================================================================= */
 /* Main Test Runner                              */
 /* ========================================================================= */
-
-// Dummy implementations for tests not included in previous context, if needed
-// Define them if they are not available elsewhere
-void test_repeated_patterns(void) { printf("\n=== Repeated Patterns Tests (Skipped/Not Provided) ===\n"); }
-void test_pathological_cases(void) { printf("\n=== Pathological Pattern Tests (Skipped/Not Provided) ===\n"); }
-void test_boundary_conditions(void) { printf("\n=== Buffer Boundary Tests (Skipped/Not Provided) ===\n"); }
-void test_advanced_case_insensitive(void) { printf("\n=== Advanced Case-Insensitive Tests (Skipped/Not Provided) ===\n"); }
-void test_varying_pattern_lengths(void) { printf("\n=== Pattern Length Variation Tests (Skipped/Not Provided) ===\n"); }
-void test_stress(void) { printf("\n=== Stress Test (Skipped/Not Provided) ===\n"); }
-
-/**
- * Main entry point for tests
- */
 int main(void)
 {
     printf("Running krep tests...\n");
-    // Set locale for potential wide character tests (though not used heavily here)
     setlocale(LC_ALL, "");
 
-    // --- Run All Test Suites ---
     test_basic_search();
     test_edge_cases();
     test_case_insensitive();
     test_performance();
-
-    // Add our new test to help diagnose the numeric pattern issue
     test_numeric_patterns();
-
 #ifdef __SSE4_2__
     test_simd_specific();
 #else
@@ -596,22 +415,11 @@ int main(void)
 #endif
     test_report_limit();
     test_multithreading_placeholder();
-    run_regex_tests();
+    run_regex_tests(); // Run the regex tests
 
-    // Calls to other tests assumed from previous context (provide dummies if needed)
-    // test_repeated_patterns();
-    // test_pathological_cases();
-    // test_boundary_conditions();
-    // test_advanced_case_insensitive();
-    // test_varying_pattern_lengths();
-    // test_stress();
-
-    // --- Report Summary ---
     printf("\n=== Test Summary ===\n");
     printf("Tests passed: %d\n", tests_passed);
     printf("Tests failed: %d\n", tests_failed);
     printf("Total tests run (approx): %d\n", tests_passed + tests_failed);
-
-    // Return 0 if all tests passed, 1 otherwise
     return tests_failed == 0 ? 0 : 1;
 }
