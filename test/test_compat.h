@@ -46,22 +46,6 @@ static inline uint64_t kmp_search_compat(
                       false, NULL);      // track_positions, result
 }
 
-/* Rabin-Karp compatibility wrapper */
-static inline uint64_t rabin_karp_search_compat(
-    const char *text, size_t text_len,
-    const char *pattern, size_t pattern_len,
-    bool case_sensitive, size_t report_limit_offset)
-{
-    // Call the 11-parameter version
-    // Note: Need dummy state for potential internal call to KMP
-    size_t dummy_last_line = SIZE_MAX;
-    uint64_t dummy_line_count = 0;
-    return rabin_karp_search(text, text_len, pattern, pattern_len,
-                             case_sensitive, report_limit_offset,
-                             false, &dummy_line_count, &dummy_last_line, // count_lines_mode, line_match_count, last_counted_line_start
-                             false, NULL);                               // track_positions, result
-}
-
 /* Regex compatibility wrapper */
 static inline uint64_t regex_search_compat(
     const char *text, size_t text_len,
@@ -122,7 +106,6 @@ static inline uint64_t neon_search_compat(
 /* Redefine the function names to use the compatibility versions */
 #define boyer_moore_search boyer_moore_search_compat
 #define kmp_search kmp_search_compat
-#define rabin_karp_search rabin_karp_search_compat
 #define regex_search regex_search_compat // Add redefine for regex
 #ifdef __SSE4_2__
 #define simd_sse42_search simd_sse42_search_compat

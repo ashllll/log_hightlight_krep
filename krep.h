@@ -1,7 +1,7 @@
 /* krep.h - Header file for krep utility
  *
  * Author: Davide Santangelo
- * Version: 0.4.0
+ * Version: 0.4.1
  * Year: 2025
  */
 
@@ -131,16 +131,6 @@ uint64_t kmp_search(const char *text_start, size_t text_len, const char *pattern
                     bool case_sensitive, size_t report_limit_offset, bool count_lines_mode,
                     uint64_t *line_match_count, size_t *last_counted_line_start,
                     bool track_positions, match_result_t *result);
-
-/**
- * @brief Rabin-Karp search algorithm implementation.
- * Finds non-overlapping matches.
- * (Parameters and return value same as boyer_moore_search)
- */
-uint64_t rabin_karp_search(const char *text_start, size_t text_len, const char *pattern, size_t pattern_len,
-                           bool case_sensitive, size_t report_limit_offset, bool count_lines_mode,
-                           uint64_t *line_match_count, size_t *last_counted_line_start,
-                           bool track_positions, match_result_t *result);
 
 /**
  * @brief Regex-based search using a pre-compiled POSIX regex.

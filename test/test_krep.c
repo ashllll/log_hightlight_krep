@@ -77,14 +77,6 @@ void test_basic_search(void)
     TEST_ASSERT(kmp_search(haystack, haystack_len, "cat", 3, true, SIZE_MAX) == 0,
                 "KMP doesn't find 'cat'");
 
-    /* Test Rabin-Karp algorithm */
-    TEST_ASSERT(rabin_karp_search(haystack, haystack_len, "quick", 5, true, SIZE_MAX) == 1,
-                "Rabin-Karp finds 'quick' once");
-    TEST_ASSERT(rabin_karp_search(haystack, haystack_len, "fox", 3, true, SIZE_MAX) == 1,
-                "Rabin-Karp finds 'fox' once");
-    TEST_ASSERT(rabin_karp_search(haystack, haystack_len, "cat", 3, true, SIZE_MAX) == 0,
-                "Rabin-Karp doesn't find 'cat'");
-
 #ifdef __SSE4_2__
     /* Test SSE4.2 algorithm (if available) */
     TEST_ASSERT(simd_sse42_search(haystack, haystack_len, "quick", 5, true, SIZE_MAX) == 1,
@@ -152,37 +144,33 @@ void test_edge_cases(void)
     printf("Testing overlapping patterns: '%s' with pattern 'aba'\n", overlap_text);
     uint64_t aba_bm = boyer_moore_search(overlap_text, len_overlap, "aba", 3, true, SIZE_MAX);
     uint64_t aba_kmp = kmp_search(overlap_text, len_overlap, "aba", 3, true, SIZE_MAX);
-    uint64_t aba_rk = rabin_karp_search(overlap_text, len_overlap, "aba", 3, true, SIZE_MAX);
 #ifdef __SSE4_2__
     uint64_t aba_sse = simd_sse42_search(overlap_text, len_overlap, "aba", 3, true, SIZE_MAX);
-    printf("  BM: %" PRIu64 ", KMP: %" PRIu64 ", RK: %" PRIu64 ", SSE: %" PRIu64 " matches\n",
-           aba_bm, aba_kmp, aba_rk, aba_sse);
+    printf("  BM: %" PRIu64 ", KMP: %" PRIu64 ", SSE: %" PRIu64 " matches\n",
+           aba_bm, aba_kmp, aba_sse);
     TEST_ASSERT(aba_sse == 2, "SSE4.2 (fallback) finds 2 occurrences of 'aba'"); // Expect 2 like BMH
 #else
-    printf("  BM: %" PRIu64 ", KMP: %" PRIu64 ", RK: %" PRIu64 " matches\n", aba_bm, aba_kmp, aba_rk);
+    printf("  BM: %" PRIu64 ", KMP: %" PRIu64 " matches\n", aba_bm, aba_kmp);
 #endif
     // --- FIXED ASSERTIONS ---
     TEST_ASSERT(aba_bm == 2, "Boyer-Moore finds 2 non-overlapping 'aba'");
     TEST_ASSERT(aba_kmp == 2, "KMP finds 2 non-overlapping 'aba'");
-    TEST_ASSERT(aba_rk == 2, "Rabin-Karp finds 2 non-overlapping 'aba'");
 
     /* Test with repeating pattern 'aa' */
     uint64_t aa_count_bm = boyer_moore_search(aa_text, len_aa, "aa", 2, true, SIZE_MAX);
     uint64_t aa_count_kmp = kmp_search(aa_text, len_aa, "aa", 2, true, SIZE_MAX);
-    uint64_t aa_count_rk = rabin_karp_search(aa_text, len_aa, "aa", 2, true, SIZE_MAX);
 #ifdef __SSE4_2__
     uint64_t aa_count_sse = simd_sse42_search(aa_text, len_aa, "aa", 2, true, SIZE_MAX);
-    printf("Sequence 'aaaaa' with pattern 'aa': BM=%" PRIu64 ", KMP=%" PRIu64 ", RK=%" PRIu64 ", SSE=%" PRIu64 "\n",
-           aa_count_bm, aa_count_kmp, aa_count_rk, aa_count_sse);
+    printf("Sequence 'aaaaa' with pattern 'aa': BM=%" PRIu64 ", KMP=%" PRIu64 ", SSE=%" PRIu64 "\n",
+           aa_count_bm, aa_count_kmp, aa_count_sse);
     TEST_ASSERT(aa_count_sse == 2, "SSE4.2 (fallback) finds 2 occurrences of 'aa'"); // Expect 2 like BMH
 #else
-    printf("Sequence 'aaaaa' with pattern 'aa': BM=%" PRIu64 ", KMP=%" PRIu64 ", RK=%" PRIu64 "\n",
-           aa_count_bm, aa_count_kmp, aa_count_rk);
+    printf("Sequence 'aaaaa' with pattern 'aa': BM=%" PRIu64 ", KMP=%" PRIu64 "\n",
+           aa_count_bm, aa_count_kmp);
 #endif
     // --- FIXED ASSERTIONS ---
     TEST_ASSERT(aa_count_bm == 2, "Boyer-Moore finds 2 non-overlapping 'aa'");
     TEST_ASSERT(aa_count_kmp == 2, "KMP finds 2 non-overlapping 'aa'");
-    TEST_ASSERT(aa_count_rk == 2, "Rabin-Karp finds 2 non-overlapping 'aa'");
 }
 
 /**
@@ -205,11 +193,6 @@ void test_case_insensitive(void)
                 "Case-sensitive doesn't find 'FOX' (KMP)");
     TEST_ASSERT(kmp_search(haystack, haystack_len, "FOX", 3, false, SIZE_MAX) == 1,
                 "Case-insensitive finds 'FOX' (KMP)");
-
-    TEST_ASSERT(rabin_karp_search(haystack, haystack_len, "dog", 3, true, SIZE_MAX) == 0,
-                "Case-sensitive doesn't find 'dog' (RK)");
-    TEST_ASSERT(rabin_karp_search(haystack, haystack_len, "dog", 3, false, SIZE_MAX) == 1,
-                "Case-insensitive finds 'Dog' (RK)");
 
 #ifdef __SSE4_2__
     TEST_ASSERT(simd_sse42_search(haystack, haystack_len, "quick", 5, true, SIZE_MAX) == 0,
@@ -267,14 +250,6 @@ void test_performance(void)
     time_taken = ((double)(end - start)) / CLOCKS_PER_SEC;
     printf("  %s: %f seconds (found %" PRIu64 " matches)\n", algo_name, time_taken, matches_found);
     TEST_ASSERT(matches_found == expected_matches, "KMP found correct number");
-
-    algo_name = "Rabin-Karp";
-    start = clock();
-    matches_found = rabin_karp_search(large_text, size, pattern, pattern_len, true, SIZE_MAX);
-    end = clock();
-    time_taken = ((double)(end - start)) / CLOCKS_PER_SEC;
-    printf("  %s: %f seconds (found %" PRIu64 " matches)\n", algo_name, time_taken, matches_found);
-    TEST_ASSERT(matches_found == expected_matches, "RK found correct number");
 
 #ifdef __SSE4_2__
     algo_name = "SSE4.2 (Fallback)";
@@ -337,35 +312,30 @@ void test_report_limit(void)
     size_t pattern_len = strlen(pattern);
     TEST_ASSERT(boyer_moore_search(text, text_len, pattern, pattern_len, true, text_len) == 4, "BM counts all 4 with full limit");
     TEST_ASSERT(kmp_search(text, text_len, pattern, pattern_len, true, text_len) == 4, "KMP counts all 4 with full limit");
-    TEST_ASSERT(rabin_karp_search(text, text_len, pattern, pattern_len, true, text_len) == 4, "RK counts all 4 with full limit");
 #ifdef __SSE4_2__
     TEST_ASSERT(simd_sse42_search(text, text_len, pattern, pattern_len, true, text_len) == 4, "SSE4.2 (Fallback) counts all 4 with full limit");
 #endif
     size_t limit3 = 18;
     TEST_ASSERT(boyer_moore_search(text, text_len, pattern, pattern_len, true, limit3) == 3, "BM counts 3 with limit 18");
     TEST_ASSERT(kmp_search(text, text_len, pattern, pattern_len, true, limit3) == 3, "KMP counts 3 with limit 18");
-    TEST_ASSERT(rabin_karp_search(text, text_len, pattern, pattern_len, true, limit3) == 3, "RK counts 3 with limit 18");
 #ifdef __SSE4_2__
     TEST_ASSERT(simd_sse42_search(text, text_len, pattern, pattern_len, true, limit3) == 3, "SSE4.2 (Fallback) counts 3 with limit 18");
 #endif
     size_t limit2 = 12;
     TEST_ASSERT(boyer_moore_search(text, text_len, pattern, pattern_len, true, limit2) == 2, "BM counts 2 with limit 12");
     TEST_ASSERT(kmp_search(text, text_len, pattern, pattern_len, true, limit2) == 2, "KMP counts 2 with limit 12");
-    TEST_ASSERT(rabin_karp_search(text, text_len, pattern, pattern_len, true, limit2) == 2, "RK counts 2 with limit 12");
 #ifdef __SSE4_2__
     TEST_ASSERT(simd_sse42_search(text, text_len, pattern, pattern_len, true, limit2) == 2, "SSE4.2 (Fallback) counts 2 with limit 12");
 #endif
     size_t limit1 = 6;
     TEST_ASSERT(boyer_moore_search(text, text_len, pattern, pattern_len, true, limit1) == 1, "BM counts 1 with limit 6");
     TEST_ASSERT(kmp_search(text, text_len, pattern, pattern_len, true, limit1) == 1, "KMP counts 1 with limit 6");
-    TEST_ASSERT(rabin_karp_search(text, text_len, pattern, pattern_len, true, limit1) == 1, "RK counts 1 with limit 6");
 #ifdef __SSE4_2__
     TEST_ASSERT(simd_sse42_search(text, text_len, pattern, pattern_len, true, limit1) == 1, "SSE4.2 (Fallback) counts 1 with limit 6");
 #endif
     size_t limit0 = 0;
     TEST_ASSERT(boyer_moore_search(text, text_len, pattern, pattern_len, true, limit0) == 0, "BM counts 0 with limit 0");
     TEST_ASSERT(kmp_search(text, text_len, pattern, pattern_len, true, limit0) == 0, "KMP counts 0 with limit 0");
-    TEST_ASSERT(rabin_karp_search(text, text_len, pattern, pattern_len, true, limit0) == 0, "RK counts 0 with limit 0");
 #ifdef __SSE4_2__
     TEST_ASSERT(simd_sse42_search(text, text_len, pattern, pattern_len, true, limit0) == 0, "SSE4.2 (Fallback) counts 0 with limit 0");
 #endif
@@ -387,12 +357,10 @@ void test_numeric_patterns(void)
     size_t pattern_len = strlen(pattern);
     uint64_t bm_count = boyer_moore_search(test_text, test_len, pattern, pattern_len, true, SIZE_MAX);
     uint64_t kmp_count = kmp_search(test_text, test_len, pattern, pattern_len, true, SIZE_MAX);
-    uint64_t rk_count = rabin_karp_search(test_text, test_len, pattern, pattern_len, true, SIZE_MAX);
-    printf("Raw pattern search results for '11': BM=%" PRIu64 ", KMP=%" PRIu64 ", RK=%" PRIu64 "\n", bm_count, kmp_count, rk_count);
+    printf("Raw pattern search results for '11': BM=%" PRIu64 ", KMP=%" PRIu64 "\n", bm_count, kmp_count);
     const uint64_t expected_count = 2; // "11" in "Line 11" and "11" in content
     TEST_ASSERT(bm_count == expected_count, "BM correctly finds only true '11'");
     TEST_ASSERT(kmp_count == expected_count, "KMP correctly finds only true '11'");
-    TEST_ASSERT(rk_count == expected_count, "RK correctly finds only true '11'");
 }
 
 /* ========================================================================= */
