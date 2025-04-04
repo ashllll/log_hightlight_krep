@@ -228,7 +228,6 @@ Performance compared to standard tools (searching a 1GB text file for a common p
 |------|----------------|--------------|
 | krep | 0.78 | 1,282 |
 | grep | 2.95 | 339 |
-| ripgrep | 1.48 | 676 |
 
 *Note: Performance may vary based on hardware, file characteristics, and search pattern.*
 
