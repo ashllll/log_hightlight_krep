@@ -774,6 +774,36 @@ uint64_t regex_search(const char *text_start, size_t text_len, const regex_t *co
     return total_match_count;
 }
 
+#ifdef __SSE4_2__
+// SSE4.2-optimized search (currently falls back to Boyer-Moore)
+uint64_t simd_sse42_search(const char *text_start, size_t text_len, const char *pattern, size_t pattern_len,
+                           bool case_sensitive, size_t report_limit_offset, bool count_lines_mode,
+                           uint64_t *line_match_count, size_t *last_counted_line_start,
+                           bool track_positions, match_result_t *result)
+{
+    // Currently just falls back to Boyer-Moore
+    return boyer_moore_search(text_start, text_len, pattern, pattern_len,
+                              case_sensitive, report_limit_offset, count_lines_mode,
+                              line_match_count, last_counted_line_start,
+                              track_positions, result);
+}
+#endif
+
+#ifdef __AVX2__
+// AVX2-optimized search (currently falls back to Boyer-Moore)
+uint64_t simd_avx2_search(const char *text_start, size_t text_len, const char *pattern, size_t pattern_len,
+                          bool case_sensitive, size_t report_limit_offset, bool count_lines_mode,
+                          uint64_t *line_match_count, size_t *last_counted_line_start,
+                          bool track_positions, match_result_t *result)
+{
+    // Currently just falls back to Boyer-Moore
+    return boyer_moore_search(text_start, text_len, pattern, pattern_len,
+                              case_sensitive, report_limit_offset, count_lines_mode,
+                              line_match_count, last_counted_line_start,
+                              track_positions, result);
+}
+#endif
+
 // Public API Implementations
 int search_string(const char *pattern, size_t pattern_len, const char *text,
                   bool case_sensitive, bool use_regex, bool count_only)
