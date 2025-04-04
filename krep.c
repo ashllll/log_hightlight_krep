@@ -976,12 +976,18 @@ uint64_t simd_avx2_search(const char *text_start, size_t text_len, const char *p
                           uint64_t *line_match_count, size_t *last_counted_line_start, size_t *last_matched_line_end,
                           bool track_positions, match_result_t *result)
 {
+    // Fallback to Boyer-Moore for cases we don't handle with AVX2
     if (pattern_len == 0 || pattern_len > SIMD_MAX_PATTERN_LEN || !case_sensitive || report_limit_offset == 0)
     {
-        return boyer_moore_search(text_start, text_len, pattern, pattern_len, case_sensitive, report_limit_offset, count_lines_mode, line_match_count, last_counted_line_start, last_matched_line_end, track_positions, result);
+        return boyer_moore_search(text_start, text_len, pattern, pattern_len, case_sensitive, report_limit_offset,
+                                  count_lines_mode, line_match_count, last_counted_line_start, last_matched_line_end,
+                                  track_positions, result);
     }
+
     uint64_t total_match_count = 0;
     size_t current_offset = 0;
+
+    // Prepare the pattern for SSE4.2 string instructions
     __m128i xmm_pattern;
     if (pattern_len == 16)
     {
@@ -993,28 +999,25 @@ uint64_t simd_avx2_search(const char *text_start, size_t text_len, const char *p
         memcpy(pattern_buf, pattern, pattern_len);
         xmm_pattern = _mm_load_si128((const __m128i *)pattern_buf);
     }
+
     const int comp_mode = _SIDD_UBYTE_OPS | _SIDD_CMP_EQUAL_ORDERED | _SIDD_POSITIVE_POLARITY | _SIDD_LEAST_SIGNIFICANT;
 
-    // Debug output - uncomment if needed for debugging
-    // fprintf(stderr, "AVX2 search: pattern_len=%zu, text_len=%zu\n", pattern_len, text_len);
-
+    // Main search loop
     while (current_offset + pattern_len <= text_len)
     {
+        // Check if we've reached the report limit
         if (current_offset >= report_limit_offset)
         {
-            if (track_positions)
-                break;
             break;
         }
 
-        // Process using Boyer-Moore directly for the smaller remaining text
-        // This ensures correct handling of patterns at the end
-        if (text_len - current_offset < 32)
+        // Handle smaller remaining text with Boyer-Moore for reliability
+        if (text_len - current_offset < 32 + pattern_len)
         {
             size_t remaining = text_len - current_offset;
-            size_t remaining_limit = (report_limit_offset > current_offset) ? (report_limit_offset - current_offset) : 0;
+            size_t remaining_limit = report_limit_offset > current_offset ? report_limit_offset - current_offset : 0;
 
-            uint64_t start_match_count_in_result = result ? result->count : 0;
+            uint64_t start_match_count = result ? result->count : 0;
             uint64_t tail_matches = boyer_moore_search(
                 text_start + current_offset, remaining,
                 pattern, pattern_len,
@@ -1023,9 +1026,10 @@ uint64_t simd_avx2_search(const char *text_start, size_t text_len, const char *p
                 last_counted_line_start, last_matched_line_end,
                 track_positions, result);
 
+            // Adjust position offsets if matches were found and we're tracking positions
             if (track_positions && result && tail_matches > 0)
             {
-                for (uint64_t k = start_match_count_in_result; k < result->count; ++k)
+                for (uint64_t k = start_match_count; k < result->count; k++)
                 {
                     result->positions[k].start_offset += current_offset;
                     result->positions[k].end_offset += current_offset;
@@ -1036,115 +1040,137 @@ uint64_t simd_avx2_search(const char *text_start, size_t text_len, const char *p
             break;
         }
 
-        // Handle 32-byte chunks with AVX2
-        __m256i ymm_text = _mm256_loadu_si256((const __m256i *)(text_start + current_offset));
-        __m128i xmm_text_low = _mm256_castsi256_si128(ymm_text);
-        __m128i xmm_text_high = _mm256_extracti128_si256(ymm_text, 1);
+        // Process 32-byte chunk with AVX2
+        bool match_found = false;
 
-        // Check low 16 bytes
-        int index_low = _mm_cmpestri(xmm_pattern, (int)pattern_len, xmm_text_low, 16, comp_mode);
-        if (index_low < 16)
+        // Load 32 bytes of text data
+        __m256i ymm_text = _mm256_loadu_si256((const __m256i *)(text_start + current_offset));
+
+        // Split into two 16-byte chunks for SSE4.2 processing
+        __m128i xmm_low = _mm256_castsi256_si128(ymm_text);
+        __m128i xmm_high = _mm256_extracti128_si256(ymm_text, 1);
+
+        // Check the low 16 bytes for potential match
+        int index_low = _mm_cmpestri(xmm_pattern, pattern_len, xmm_low, 16, comp_mode);
+        if (index_low != 16)
         {
+            // Potential match found in low part
             size_t match_pos = current_offset + index_low;
 
-            // Verify full pattern match to avoid false positives
+            // Verify the full match (only if there's enough text remaining)
             if (match_pos + pattern_len <= text_len)
             {
-                bool is_match = true;
+                bool full_match = true;
                 for (size_t i = 0; i < pattern_len; i++)
                 {
                     if (text_start[match_pos + i] != pattern[i])
                     {
-                        is_match = false;
+                        full_match = false;
                         break;
                     }
                 }
 
-                if (is_match && match_pos < report_limit_offset)
+                if (full_match)
                 {
+                    match_found = true;
                     total_match_count++;
 
-                    // Handle line counting if needed
-                    if (count_lines_mode && match_pos >= *last_matched_line_end)
+                    // Handle line counting mode
+                    if (count_lines_mode)
                     {
-                        size_t line_start = find_line_start(text_start, match_pos);
-                        if (*last_counted_line_start == SIZE_MAX || line_start != *last_counted_line_start)
+                        if (match_pos >= *last_matched_line_end)
                         {
-                            (*line_match_count)++;
-                            *last_counted_line_start = line_start;
-                            *last_matched_line_end = find_line_end(text_start, text_len, line_start);
-                            if (*last_matched_line_end < text_len && text_start[*last_matched_line_end] == '\n')
-                                (*last_matched_line_end)++;
+                            size_t line_start = find_line_start(text_start, match_pos);
+                            if (*last_counted_line_start == SIZE_MAX || line_start != *last_counted_line_start)
+                            {
+                                (*line_match_count)++;
+                                *last_counted_line_start = line_start;
+                                *last_matched_line_end = find_line_end(text_start, text_len, line_start);
+                                if (*last_matched_line_end < text_len && text_start[*last_matched_line_end] == '\n')
+                                    (*last_matched_line_end)++;
+                            }
                         }
                     }
 
-                    // Track position if needed
+                    // Record match position if tracking
                     if (track_positions && result)
                     {
                         if (!match_result_add(result, match_pos, match_pos + pattern_len))
                             fprintf(stderr, "Warning: Failed to add match position (AVX2-Low).\n");
                     }
+
+                    // Move past this match for next iteration
+                    current_offset = match_pos + pattern_len;
+                    continue;
                 }
             }
-
-            // Advance past this match
-            current_offset = match_pos + pattern_len;
-            continue;
         }
 
-        // Check high 16 bytes
-        int index_high = _mm_cmpestri(xmm_pattern, (int)pattern_len, xmm_text_high, 16, comp_mode);
-        if (index_high < 16)
+        // Check the high 16 bytes if no match found in low part
+        if (!match_found)
         {
-            size_t match_pos = current_offset + 16 + index_high;
-
-            // Verify full pattern match
-            if (match_pos + pattern_len <= text_len)
+            int index_high = _mm_cmpestri(xmm_pattern, pattern_len, xmm_high, 16, comp_mode);
+            if (index_high != 16)
             {
-                bool is_match = true;
-                for (size_t i = 0; i < pattern_len; i++)
-                {
-                    if (text_start[match_pos + i] != pattern[i])
-                    {
-                        is_match = false;
-                        break;
-                    }
-                }
+                // Potential match found in high part
+                size_t match_pos = current_offset + 16 + index_high;
 
-                if (is_match && match_pos < report_limit_offset)
+                // Verify the full match (only if there's enough text remaining)
+                if (match_pos + pattern_len <= text_len)
                 {
-                    total_match_count++;
-
-                    // Handle line counting if needed
-                    if (count_lines_mode && match_pos >= *last_matched_line_end)
+                    bool full_match = true;
+                    for (size_t i = 0; i < pattern_len; i++)
                     {
-                        size_t line_start = find_line_start(text_start, match_pos);
-                        if (*last_counted_line_start == SIZE_MAX || line_start != *last_counted_line_start)
+                        if (text_start[match_pos + i] != pattern[i])
                         {
-                            (*line_match_count)++;
-                            *last_counted_line_start = line_start;
-                            *last_matched_line_end = find_line_end(text_start, text_len, line_start);
-                            if (*last_matched_line_end < text_len && text_start[*last_matched_line_end] == '\n')
-                                (*last_matched_line_end)++;
+                            full_match = false;
+                            break;
                         }
                     }
 
-                    // Track position if needed
-                    if (track_positions && result)
+                    if (full_match)
                     {
-                        if (!match_result_add(result, match_pos, match_pos + pattern_len))
-                            fprintf(stderr, "Warning: Failed to add match position (AVX2-High).\n");
+                        match_found = true;
+                        total_match_count++;
+
+                        // Handle line counting mode
+                        if (count_lines_mode)
+                        {
+                            if (match_pos >= *last_matched_line_end)
+                            {
+                                size_t line_start = find_line_start(text_start, match_pos);
+                                if (*last_counted_line_start == SIZE_MAX || line_start != *last_counted_line_start)
+                                {
+                                    (*line_match_count)++;
+                                    *last_counted_line_start = line_start;
+                                    *last_matched_line_end = find_line_end(text_start, text_len, line_start);
+                                    if (*last_matched_line_end < text_len && text_start[*last_matched_line_end] == '\n')
+                                        (*last_matched_line_end)++;
+                                }
+                            }
+                        }
+
+                        // Record match position if tracking
+                        if (track_positions && result)
+                        {
+                            if (!match_result_add(result, match_pos, match_pos + pattern_len))
+                                fprintf(stderr, "Warning: Failed to add match position (AVX2-High).\n");
+                        }
+
+                        // Move past this match for next iteration
+                        current_offset = match_pos + pattern_len;
+                        continue;
                     }
                 }
             }
-
-            // Advance past this match
-            current_offset = match_pos + pattern_len;
-            continue;
         }
 
-        // No match in this 32-byte block, advance by smaller increments to avoid missing matches
-        current_offset += 1;
+        // If no match was found, advance by just 1 byte to ensure we don't miss any patterns
+        // This is less efficient but guarantees correctness
+        if (!match_found)
+        {
+            current_offset += 1;
+        }
     }
 
     return total_match_count;
