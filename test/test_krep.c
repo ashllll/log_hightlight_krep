@@ -294,24 +294,26 @@ void test_simd_specific(void)
         .use_regex = false,
         .track_positions = false,
         .count_lines_mode = false,
-        .count_matches_mode = false,
         .compiled_regex = NULL};
 
-    // Need direct access to the actual functions, bypassing the compatibility macros
-    // We need to "undef" the macros from test_compat.h so we can access the original functions
+// We need to access the actual functions, not the compatibility wrappers
+// First save the original function addresses by temporarily undefining the macros
+#undef simd_sse42_search
+#undef boyer_moore_search
 
-    // Save the original pointers to the actual implementation functions before any tests
-    uint64_t (*original_sse42_func)(const search_params_t *, const char *, size_t, match_result_t *) =
-        &simd_sse42_search;
+    // Get direct pointers to the actual functions
+    uint64_t (*actual_sse_func)(const search_params_t *, const char *, size_t, match_result_t *) = simd_sse42_search;
+    uint64_t (*actual_bmh_func)(const search_params_t *, const char *, size_t, match_result_t *) = boyer_moore_search;
 
-    uint64_t (*original_bmh_func)(const search_params_t *, const char *, size_t, match_result_t *) =
-        &boyer_moore_search;
+// Redefine the macros to restore compatibility layer
+#define simd_sse42_search simd_sse42_search_compat
+#define boyer_moore_search boyer_moore_search_compat
 
     // Test pattern shorter than SIMD width
     params.pattern = pattern1;
     params.pattern_len = strlen(pattern1);
-    uint64_t matches1_sse42 = original_sse42_func(&params, haystack, haystack_len, NULL);
-    uint64_t matches1_bmh = original_bmh_func(&params, haystack, haystack_len, NULL);
+    uint64_t matches1_sse42 = actual_sse_func(&params, haystack, haystack_len, NULL);
+    uint64_t matches1_bmh = actual_bmh_func(&params, haystack, haystack_len, NULL);
 
     TEST_ASSERT(matches1_sse42 == matches1_bmh, "SSE4.2 and Boyer-Moore match for 5-byte pattern");
     TEST_ASSERT(matches1_sse42 == 1, "SSE4.2 finds 'dolor' once");
@@ -319,8 +321,8 @@ void test_simd_specific(void)
     // Test pattern in middle of SIMD range
     params.pattern = pattern2;
     params.pattern_len = strlen(pattern2);
-    uint64_t matches2_sse42 = original_sse42_func(&params, haystack, haystack_len, NULL);
-    uint64_t matches2_bmh = original_bmh_func(&params, haystack, haystack_len, NULL);
+    uint64_t matches2_sse42 = actual_sse_func(&params, haystack, haystack_len, NULL);
+    uint64_t matches2_bmh = actual_bmh_func(&params, haystack, haystack_len, NULL);
 
     TEST_ASSERT(matches2_sse42 == matches2_bmh, "SSE4.2 and Boyer-Moore match for 11-byte pattern");
     TEST_ASSERT(matches2_sse42 == 1, "SSE4.2 finds 'consectetur' once");
@@ -328,8 +330,8 @@ void test_simd_specific(void)
     // Test pattern near SIMD width limit
     params.pattern = pattern3;
     params.pattern_len = strlen(pattern3);
-    uint64_t matches3_sse42 = original_sse42_func(&params, haystack, haystack_len, NULL);
-    uint64_t matches3_bmh = original_bmh_func(&params, haystack, haystack_len, NULL);
+    uint64_t matches3_sse42 = actual_sse_func(&params, haystack, haystack_len, NULL);
+    uint64_t matches3_bmh = actual_bmh_func(&params, haystack, haystack_len, NULL);
 
     TEST_ASSERT(matches3_sse42 == matches3_bmh, "SSE4.2 and Boyer-Moore match for 15-byte pattern");
     TEST_ASSERT(matches3_sse42 == 1, "SSE4.2 finds 'adipiscing elit' once");
@@ -337,16 +339,16 @@ void test_simd_specific(void)
     // Test pattern at exactly SIMD width limit
     params.pattern = pattern16;
     params.pattern_len = strlen(pattern16);
-    uint64_t matches16_sse42 = original_sse42_func(&params, haystack, haystack_len, NULL);
-    uint64_t matches16_bmh = original_bmh_func(&params, haystack, haystack_len, NULL);
+    uint64_t matches16_sse42 = actual_sse_func(&params, haystack, haystack_len, NULL);
+    uint64_t matches16_bmh = actual_bmh_func(&params, haystack, haystack_len, NULL);
 
     TEST_ASSERT(matches16_sse42 == matches16_bmh, "SSE4.2 and Boyer-Moore match for 16-byte pattern");
 
     // Test pattern > SIMD width (should cause fallback)
     params.pattern = pattern17;
     params.pattern_len = strlen(pattern17);
-    uint64_t matches17_sse42 = original_sse42_func(&params, haystack, haystack_len, NULL);
-    uint64_t matches17_bmh = original_bmh_func(&params, haystack, haystack_len, NULL);
+    uint64_t matches17_sse42 = actual_sse_func(&params, haystack, haystack_len, NULL);
+    uint64_t matches17_bmh = actual_bmh_func(&params, haystack, haystack_len, NULL);
 
     TEST_ASSERT(matches17_sse42 == matches17_bmh,
                 "SSE4.2 fallback to Boyer-Moore for 17-byte pattern produces same result");
@@ -357,8 +359,8 @@ void test_simd_specific(void)
     params.pattern_len = strlen(pattern_upper);
     params.case_sensitive = false;
 
-    uint64_t matches_ci_sse42 = original_sse42_func(&params, haystack, haystack_len, NULL);
-    uint64_t matches_ci_bmh = original_bmh_func(&params, haystack, haystack_len, NULL);
+    uint64_t matches_ci_sse42 = actual_sse_func(&params, haystack, haystack_len, NULL);
+    uint64_t matches_ci_bmh = actual_bmh_func(&params, haystack, haystack_len, NULL);
 
     TEST_ASSERT(matches_ci_sse42 == matches_ci_bmh,
                 "Case-insensitive search consistent between SSE4.2 fallback and Boyer-Moore");
