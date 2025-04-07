@@ -1311,108 +1311,113 @@ uint64_t simd_sse42_search(const search_params_t *params,
     size_t pattern_len = params->pattern_len;
     bool count_lines_mode = params->count_lines_mode;
     bool track_positions = params->track_positions;
-    bool case_sensitive = params->case_sensitive; // Needed for fallback check
+    bool case_sensitive = params->case_sensitive; // Only supports case-sensitive search
 
-    // PCMPESTRI supports patterns up to 16 bytes.
-    // This implementation only handles case-sensitive.
+    // Fallback to Boyer-Moore for unsupported cases
     if (pattern_len == 0 || pattern_len > 16 || text_len < pattern_len || !case_sensitive)
     {
-        // Fallback to Boyer-Moore if requirements not met
         return boyer_moore_search(params, text_start, text_len, result);
     }
 
-    size_t current_offset = 0;
-    size_t last_counted_line_start = SIZE_MAX; // For -c mode tracking
+    // Track the last line counted (for count_lines_mode)
+    size_t last_counted_line_start = SIZE_MAX;
 
-    // Load the pattern into an XMM register
-    __m128i xmm_pattern;
-    // Use _mm_loadu_si128 if the pattern is not guaranteed to be aligned
-    if (pattern_len == 16)
+    // Use steady progression through the text rather than jumping ahead
+    size_t pos = 0;
+    while (pos <= text_len - pattern_len)
     {
-        xmm_pattern = _mm_loadu_si128((const __m128i *)pattern);
-    }
-    else
-    {
-        // For shorter patterns, zero a buffer and copy, then load (aligned)
-        char pattern_buf[16] __attribute__((aligned(16))) = {0};
-        memcpy(pattern_buf, pattern, pattern_len);
-        xmm_pattern = _mm_load_si128((const __m128i *)pattern_buf);
-    }
-
-    // Comparison mode for finding the exact pattern substring
-    const int comp_mode = _SIDD_UBYTE_OPS | _SIDD_CMP_EQUAL_ORDERED | _SIDD_POSITIVE_POLARITY | _SIDD_LEAST_SIGNIFICANT;
-
-    // Iterate through the text as long as a full pattern can potentially fit
-    while (current_offset + pattern_len <= text_len)
-    {
-        // Determine how much text to load (up to 16 bytes)
-        // Ensure we load at least pattern_len bytes if possible
-        size_t text_chunk_len = (current_offset + 16 <= text_len) ? 16 : (text_len - current_offset);
-
-        // If remaining text is less than pattern length, we can stop
-        if (text_chunk_len < pattern_len)
-        {
+        // Check if there's enough text left to potentially match the pattern
+        if (pos + pattern_len > text_len)
             break;
+
+        // Load the pattern into an XMM register
+        __m128i xmm_pattern;
+        if (pattern_len == 16)
+        {
+            xmm_pattern = _mm_loadu_si128((const __m128i *)pattern);
+        }
+        else
+        {
+            // For shorter patterns, create a buffer with the pattern + zeros
+            char pattern_buf[16] = {0};
+            memcpy(pattern_buf, pattern, pattern_len);
+            xmm_pattern = _mm_loadu_si128((const __m128i *)pattern_buf);
         }
 
-        // Load the text chunk (unaligned load)
-        __m128i xmm_text = _mm_loadu_si128((const __m128i *)(text_start + current_offset));
+        // Load the current text segment (up to 16 bytes)
+        size_t bytes_to_load = text_len - pos > 16 ? 16 : text_len - pos;
+        __m128i xmm_text = _mm_loadu_si128((const __m128i *)(text_start + pos));
 
-        // Perform the comparison using PCMPESTRI.
-        // It returns the index of the first byte of the match within the text chunk,
-        // or text_chunk_len if no match is found in the chunk.
-        int index = _mm_cmpestri(xmm_pattern, (int)pattern_len, xmm_text, (int)text_chunk_len, comp_mode);
+        // Configure comparison: equal ordered, byte granularity
+        const int mode = _SIDD_UBYTE_OPS | _SIDD_CMP_EQUAL_ORDERED |
+                         _SIDD_POSITIVE_POLARITY | _SIDD_LEAST_SIGNIFICANT;
 
-        // If index < text_chunk_len, a potential match start was found at 'index'
-        // relative to the start of the chunk.
-        // We need to check if the *full* pattern matches starting at this index.
-        // PCMPESTRI with _SIDD_CMP_EQUAL_ORDERED finds the start of a substring match.
-        if (index < (int)text_chunk_len)
+        // Find the position of the first potential match
+        int match_pos = _mm_cmpestri(xmm_pattern, pattern_len, xmm_text, bytes_to_load, mode);
+
+        // If no match in this segment, advance to the next position
+        if (match_pos == 16 || match_pos >= bytes_to_load)
         {
-            // Calculate the absolute start offset of the match
-            size_t match_start_abs = current_offset + index;
+            pos++;
+            continue;
+        }
 
-            // --- Match Found ---
-            if (count_lines_mode) // -c mode
+        // Verify the match (necessary for correctness as PCMPESTRI might find partial matches)
+        size_t match_start = pos + match_pos;
+
+        // We need to check if we have enough room for the pattern
+        if (match_start + pattern_len <= text_len)
+        {
+            // Explicit verification of the full pattern match
+            bool full_match = (memcmp(text_start + match_start, pattern, pattern_len) == 0);
+
+            if (full_match)
             {
-                size_t line_start = find_line_start(text_start, text_len, match_start_abs);
-                if (line_start != last_counted_line_start)
+                // Handle the match
+                if (count_lines_mode)
                 {
-                    count++; // Increment line count
-                    last_counted_line_start = line_start;
-                    // OPTIMIZATION for -c: Skip to the end of the current line
-                    size_t line_end = find_line_end(text_start, text_len, line_start);
-                    // Advance offset past the newline
-                    current_offset = (line_end < text_len) ? line_end + 1 : text_len;
-                    continue; // Restart while loop
-                }
-                // If match is on an already counted line, advance by 1 to check next position
-                current_offset = match_start_abs + 1;
-            }
-            else // Not -c mode (default or -o)
-            {
-                count++;                       // Increment match count
-                if (track_positions && result) // If tracking positions
-                {
-                    if (!match_result_add(result, match_start_abs, match_start_abs + pattern_len))
+                    // For line counting mode, count each line only once
+                    size_t line_start = find_line_start(text_start, text_len, match_start);
+                    if (line_start != last_counted_line_start)
                     {
-                        fprintf(stderr, "Warning: Failed to add match position (SSE4.2).\n");
+                        count++;
+                        last_counted_line_start = line_start;
+
+                        // Advance to the end of the line
+                        size_t line_end = find_line_end(text_start, text_len, line_start);
+                        pos = (line_end < text_len) ? line_end + 1 : text_len;
+                        continue;
                     }
                 }
-                // Advance by pattern_len for -o to avoid overlapping matches, 1 otherwise
-                current_offset = match_start_abs + (only_matching ? pattern_len : 1);
+                else
+                {
+                    // For regular match counting
+                    count++;
+
+                    // Record position if tracking
+                    if (track_positions && result)
+                    {
+                        match_result_add(result, match_start, match_start + pattern_len);
+                    }
+                }
+
+                // Advance one position for overlapping searches or pattern_len for non-overlapping
+                pos = match_start + (only_matching ? pattern_len : 1);
+            }
+            else
+            {
+                // Not a full match, advance one character
+                pos++;
             }
         }
-        else // No match found starting *within* this chunk
+        else
         {
-            // Advance the search position. Advancing by 16 (chunk size) is generally safe
-            // if no match was found, but advancing by 1 guarantees finding overlaps
-            // that might cross chunk boundaries. For simplicity and correctness with overlaps,
-            // advance by 1. More complex logic could advance further.
-            current_offset++;
+            // Not enough room for pattern, advance one character
+            pos++;
         }
     }
-    return count; // Return line count or match count
+
+    return count;
 }
 #endif // KREP_USE_SSE42
 
