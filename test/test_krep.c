@@ -288,6 +288,10 @@ void test_simd_specific(void)
     const char *pattern16 = "consectetur adip";  // 16 bytes (SSE4.2 limit)
     const char *pattern17 = "consectetur adipi"; // 17 bytes (should cause fallback)
 
+// Temporarily undefine the search function macros so we can use the actual functions directly
+#undef simd_sse42_search
+#undef boyer_moore_search
+
     search_params_t params = {
         .case_sensitive = true,
         .use_regex = false,
@@ -351,6 +355,10 @@ void test_simd_specific(void)
     TEST_ASSERT(matches_ci_sse42 == matches_ci_bmh,
                 "Case-insensitive search consistent between SSE4.2 fallback and Boyer-Moore");
     TEST_ASSERT(matches_ci_sse42 == 1, "Case-insensitive SSE4.2 fallback finds 'DOLOR' once");
+
+// Redefine the macros for other tests
+#define simd_sse42_search simd_sse42_search_compat
+#define boyer_moore_search boyer_moore_search_compat
 }
 #endif // __SSE4_2__
 

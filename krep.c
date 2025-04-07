@@ -1518,7 +1518,7 @@ uint64_t simd_avx2_search(const search_params_t *params,
         }
 
         // Track if we found a match in this chunk to determine advancement
-        bool match_found_in_chunk = false;
+        bool found_match = false;
         size_t advance_offset = current_offset + 1; // Default advance by 1
 
         // Process each potential match indicated by the mask
@@ -1541,7 +1541,7 @@ uint64_t simd_avx2_search(const search_params_t *params,
 
                 if (is_match)
                 {
-                    match_found_in_chunk = true;
+                    found_match = true;
                     // --- Match Found ---
                     if (count_lines_mode) // -c mode
                     {
