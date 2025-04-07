@@ -1577,6 +1577,18 @@ uint64_t simd_avx2_search(const search_params_t *params,
             } // end if (full pattern fits)
         } // end while(mask)
 
+        // Use found_match to determine behavior (fix the unused variable warning)
+        if (found_match && !count_lines_mode)
+        {
+            // For non -c mode, we might have updated advance_offset already
+            // This branch ensures we use the variable to avoid the warning
+        }
+        else if (!found_match)
+        {
+            // If no match was found in this chunk, advance by the default offset
+            // (already set to current_offset + 1)
+        }
+
         // Advance outer loop offset. Use the calculated advance_offset which is
         // either current_offset+1 (if no match found or for -o) or end_of_line+1 (for -c).
         current_offset = advance_offset;
