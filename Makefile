@@ -66,17 +66,19 @@ CFLAGS = $(BASE_CFLAGS) $(ARCH_CFLAGS)
 # Specific flags for testing compilation
 TEST_CFLAGS = $(CFLAGS) -DTESTING
 
-SRC = krep.c
-OBJ = $(SRC:.c=.o) # krep.o (for main executable)
+# Add aho_corasick.c to the source files
+SRC = krep.c aho_corasick.c
+OBJ = $(SRC:.c=.o) # krep.o aho_corasick.o (for main executable)
 EXEC = krep
 
 # Test source files and their object files
-TEST_SRC_FILES = test/test_krep.c test/test_regex.c
-TEST_OBJ = $(TEST_SRC_FILES:.c=.o) # test/test_krep.o test/test_regex.o
+TEST_SRC_FILES = test/test_krep.c test/test_regex.c test/test_multiple_patterns.c
+TEST_OBJ = $(TEST_SRC_FILES:.c=.o) # test/test_krep.o test/test_regex.o test/test_multiple_patterns.o
 TEST_EXEC = test_krep
 
-# Define a separate object file for krep.c when compiled for testing
+# Define separate object files for sources when compiled for testing
 KREP_TEST_OBJ = krep_test.o
+AHO_CORASICK_TEST_OBJ = aho_corasick_test.o
 
 # Default target
 all: $(EXEC)
@@ -97,8 +99,12 @@ $(TEST_OBJ): test/%.o: test/%.c test/test_krep.h test/test_compat.h krep.h
 $(KREP_TEST_OBJ): krep.c krep.h
 	$(CC) $(TEST_CFLAGS) -c $< -o $@
 
-# Rule to build the test executable (links test objects + krep_test.o)
-$(TEST_EXEC): $(KREP_TEST_OBJ) $(TEST_OBJ)
+# Rule to build aho_corasick.c specifically for testing
+$(AHO_CORASICK_TEST_OBJ): aho_corasick.c krep.h
+	$(CC) $(TEST_CFLAGS) -c $< -o $@
+
+# Rule to build the test executable (links test objects + krep_test.o + aho_corasick_test.o)
+$(TEST_EXEC): $(KREP_TEST_OBJ) $(AHO_CORASICK_TEST_OBJ) $(TEST_OBJ)
 	$(CC) $(TEST_CFLAGS) -o $(TEST_EXEC) $^ $(LDFLAGS)
 
 # Target to run tests
@@ -106,7 +112,7 @@ test: $(TEST_EXEC)
 	./$(TEST_EXEC)
 
 clean:
-	rm -f $(OBJ) $(EXEC) $(TEST_OBJ) $(TEST_EXEC) $(KREP_TEST_OBJ)
+	rm -f $(OBJ) $(EXEC) $(TEST_OBJ) $(TEST_EXEC) $(KREP_TEST_OBJ) $(AHO_CORASICK_TEST_OBJ)
 
 install: $(EXEC)
 	install -d $(DESTDIR)$(BINDIR)

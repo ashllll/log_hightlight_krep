@@ -27,14 +27,13 @@
  */
 
 /**
- * @brief Regex-based search using POSIX regular expressions.
- * (Matching the updated signature from krep.h)
+ * Test-specific function with a different signature from production code.
+ * Used for specific test cases that need to track position data.
  */
-// MODIFIED: Added last_matched_line_end parameter to match krep.h
-uint64_t regex_search(const char *text_start, size_t text_len, const regex_t *compiled_regex,
-                      size_t report_limit_offset, bool count_lines_mode,
-                      uint64_t *line_match_count, size_t *last_counted_line_start, size_t *last_matched_line_end,
-                      bool track_positions, match_result_t *result);
+uint64_t regex_search_test_positions(const char *text_start, size_t text_len, const regex_t *compiled_regex,
+                                     size_t report_limit_offset, bool count_lines_mode,
+                                     uint64_t *line_match_count, size_t *last_counted_line_start, size_t *last_matched_line_end,
+                                     bool track_positions, match_result_t *result);
 
 /* Declarations for regex test functions */
 void test_basic_regex(void);

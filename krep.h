@@ -1,7 +1,7 @@
-/* krep.h - Header file for krep utility
+/* krep.h - Header file for krep utility (Optimized Version)
  *
- * Author: Davide Santangelo
- * Version: 0.4.2
+ * Author: Davide Santangelo (Original), Optimized Version
+ * Version: 1.0.2 (Fixed MAP_POPULATE, removed unused variable)
  * Year: 2025
  */
 
@@ -10,14 +10,25 @@
 
 #include <stdbool.h>
 #include <stdint.h>
-#include <stdio.h> // For size_t definition
-#include <regex.h> // For regex_t type
+#include <stdio.h>     // For size_t definition
+#include <regex.h>     // For regex_t type
+#include <pthread.h>   // For mutex types (though no longer used for counting)
+#include <stdatomic.h> // For atomic types used in structs
+
+/* --- Compiler-specific macros --- */
+#ifdef __GNUC__
+#define KREP_UNUSED __attribute__((unused))
+#else
+#define KREP_UNUSED
+#endif
 
 /* --- ANSI Color Codes --- */
-#define KREP_COLOR_MATCH "\033[1;31m" // Bold Red
+// Define colors consistently
 #define KREP_COLOR_RESET "\033[0m"
-#define KREP_COLOR_FILENAME "\033[35m"  // Magenta for filename
-#define KREP_COLOR_SEPARATOR "\033[36m" // Cyan for separator (:)
+#define KREP_COLOR_FILENAME "\033[1;35m"  // Magenta
+#define KREP_COLOR_SEPARATOR "\033[1;90m" // Bright Black (Gray)
+#define KREP_COLOR_MATCH "\033[1;31m"     // Bright Red
+#define KREP_COLOR_TEXT "\033[0m"         // Default terminal text color
 
 /* --- Match tracking structure --- */
 typedef struct
@@ -33,60 +44,124 @@ typedef struct
    uint64_t capacity;           // Current allocated capacity of the positions array
 } match_result_t;
 
+/* --- Structures for Multithreading --- */
+
+// Parameters shared across search functions and threads
+typedef struct
+{
+   // Single pattern legacy fields (still used by some functions)
+   const char *pattern;
+   size_t pattern_len;
+
+   // Multiple pattern fields
+   const char **patterns; // Array of patterns (for multiple -e options)
+   size_t *pattern_lens;  // Array of pattern lengths
+   size_t num_patterns;   // Number of patterns
+
+   // Search options
+   bool case_sensitive;
+   bool use_regex;
+   bool count_lines_mode;   // True for -c mode (count lines)
+   bool count_matches_mode; // True for -co mode (count matches - internal concept)
+   bool track_positions;    // True for default or -o mode (track positions)
+   // bool overlapping_mode; // Implicitly true for -o, handled by algorithm advance logic
+
+   // Compiled regex (if applicable, compiled once per file/string)
+   const regex_t *compiled_regex;
+
+} search_params_t;
+
+// Data passed to each search thread
+typedef struct
+{
+   int thread_id;
+   const search_params_t *params; // Pointer to shared search parameters
+   const char *chunk_start;       // Pointer to the start of the memory chunk for this thread
+   size_t chunk_len;              // Length of the chunk to process (may include overlap)
+
+   // Thread-specific results
+   match_result_t *local_result; // For position tracking (default/-o)
+   uint64_t count_result;        // For line counting (-c) or match counting (-co)
+
+   // Status flags
+   bool error_flag; // Flag to indicate an error occurred in the thread
+} thread_data_t;
+
+/* --- Thread Pool Implementation --- */
+typedef struct task
+{
+   void *(*func)(void *); // Task function
+   void *arg;             // Function argument
+   struct task *next;     // Next task in queue
+} task_t;
+
+typedef struct
+{
+   pthread_t *threads;           // Array of worker threads
+   int num_threads;              // Number of worker threads
+   task_t *task_queue;           // Task queue head
+   task_t *task_queue_tail;      // Task queue tail for faster enqueue
+   pthread_mutex_t queue_mutex;  // Mutex for task queue access
+   pthread_cond_t queue_cond;    // Condition variable for task availability
+   pthread_cond_t complete_cond; // Condition variable for task completion
+   size_t working_threads;       // Counter for busy threads
+   atomic_bool shutdown;         // Shutdown flag
+} thread_pool_t;
+
+/* --- Thread Pool API --- */
+thread_pool_t *thread_pool_init(int num_threads);
+bool thread_pool_submit(thread_pool_t *pool, void *(*func)(void *), void *arg);
+void thread_pool_wait_all(thread_pool_t *pool);
+void thread_pool_destroy(thread_pool_t *pool);
+
+/* --- Function Pointer Type for Search Algorithms --- */
+// Updated signature: Returns count (lines or matches depending on mode).
+// Takes match_result_t only if track_positions is true.
+typedef uint64_t (*search_func_t)(const search_params_t *params,
+                                  const char *text_start,
+                                  size_t text_len,
+                                  match_result_t *result); // For position tracking (can be NULL)
+
 /* --- Public API --- */
 
 /**
- * @brief Searches a single file for the given pattern.
+ * @brief Searches a single file for the given pattern(s). Handles multithreading.
  *
- * @param filename Path to the file.
- * @param pattern The search pattern (literal or regex).
- * @param pattern_len Length of the pattern.
- * @param case_sensitive True for case-sensitive search.
- * @param count_only True to only count matching lines (-c) or matches (-co).
- * @param thread_count Number of threads to use (currently ignored, single-threaded).
- * @param use_regex True if the pattern is a POSIX ERE.
+ * @param params Search parameters including patterns and options.
+ * @param filename Path to the file, or "-" for stdin.
+ * @param requested_thread_count Number of threads requested by user (0 for auto).
  * @return 0 if matches found, 1 if no matches found, 2 on error.
  */
-int search_file(const char *filename, const char *pattern, size_t pattern_len, bool case_sensitive,
-                bool count_only, int thread_count, bool use_regex);
+int search_file(const search_params_t *params, const char *filename, int requested_thread_count);
 
 /**
- * @brief Searches a string in memory for the given pattern.
+ * @brief Searches a string in memory for the given pattern(s) (single-threaded).
  *
- * @param pattern The search pattern (literal or regex).
- * @param pattern_len Length of the pattern.
+ * @param params Search parameters including patterns and options.
  * @param text The string to search within.
- * @param case_sensitive True for case-sensitive search.
- * @param use_regex True if the pattern is a POSIX ERE.
- * @param count_only True to only count matching lines (-c) or matches (-co).
  * @return 0 if matches found, 1 if no matches found, 2 on error.
  */
-int search_string(const char *pattern, size_t pattern_len, const char *text, bool case_sensitive, bool use_regex, bool count_only);
+int search_string(const search_params_t *params, const char *text);
 
 /**
- * @brief Recursively searches a directory for the given pattern.
+ * @brief Recursively searches a directory for the given pattern(s).
  *
  * @param base_dir The starting directory path.
- * @param pattern The search pattern (literal or regex).
- * @param pattern_len Length of the pattern.
- * @param case_sensitive True for case-sensitive search.
- * @param count_only True to only count matching lines (-c) or matches (-co).
- * @param thread_count Number of threads to use (currently ignored).
- * @param use_regex True if the pattern is a POSIX ERE.
- * @param global_match_found Pointer to a boolean flag that will be set to true if any match is found during the recursion.
+ * @param params Search parameters including patterns and options.
+ * @param thread_count Number of threads to use within file searches.
  * @return The total number of errors encountered during the recursive search.
  */
-int search_directory_recursive(const char *base_dir, const char *pattern, size_t pattern_len,
-                               bool case_sensitive, bool count_only, int thread_count, bool use_regex,
-                               bool *global_match_found); // Added 8th parameter
+int search_directory_recursive(const char *base_dir, const search_params_t *params, int thread_count);
 
 /* --- Match result management functions --- */
 match_result_t *match_result_init(uint64_t initial_capacity);
 bool match_result_add(match_result_t *result, size_t start_offset, size_t end_offset);
 void match_result_free(match_result_t *result);
+bool match_result_merge(match_result_t *dest, const match_result_t *src, size_t chunk_offset);
 
 /**
  * @brief Print matching lines or only matched parts (-o). Handles highlighting and unique lines.
+ * Assumes 'result' is sorted by start_offset if aggregated from multiple threads.
  *
  * @param filename Optional filename prefix. NULL if not needed.
  * @param text The original text buffer.
@@ -96,95 +171,89 @@ void match_result_free(match_result_t *result);
  */
 size_t print_matching_items(const char *filename, const char *text, size_t text_len, const match_result_t *result);
 
+// Print usage information
 void print_usage(const char *program_name);
 
-/* --- Internal Search Algorithm Declarations (Updated Signatures) --- */
+/* --- Internal Search Algorithm Declarations (Updated Signature) --- */
+
+uint64_t boyer_moore_search(const search_params_t *params, const char *text_start, size_t text_len, match_result_t *result);
+uint64_t kmp_search(const search_params_t *params, const char *text_start, size_t text_len, match_result_t *result);
+uint64_t regex_search(const search_params_t *params, const char *text_start, size_t text_len, match_result_t *result);
+uint64_t aho_corasick_search(const search_params_t *params, const char *text_start, size_t text_len, match_result_t *result);
+uint64_t memchr_search(const search_params_t *params, const char *text_start, size_t text_len, match_result_t *result);
+uint64_t memchr_short_search(const search_params_t *params, const char *text_start, size_t text_len, match_result_t *result); // New function for short patterns
+
+// SIMD functions (only declared if supported by compiler flags)
+#if defined(__SSE4_2__)
+uint64_t simd_sse42_search(const search_params_t *params, const char *text_start, size_t text_len, match_result_t *result);
+#endif
+
+#if defined(__AVX2__)
+uint64_t simd_avx2_search(const search_params_t *params, const char *text_start, size_t text_len, match_result_t *result);
+#endif
+
+#if defined(__ARM_NEON)
+uint64_t neon_search(const search_params_t *params, const char *text_start, size_t text_len, match_result_t *result);
+#endif
+
+/* --- Helper Functions --- */
+bool memory_equals_case_insensitive(const unsigned char *s1, const unsigned char *s2, size_t n);
+void prepare_bad_char_table(const unsigned char *pattern, size_t pattern_len, int *bad_char_table, bool case_sensitive);
+search_func_t select_search_algorithm(const search_params_t *params);
+const char *get_algorithm_name(search_func_t func);
+
+/* --- Skip Lists for Recursive Search --- */
+// Defined here so they are accessible by search_directory_recursive in krep.c
+static const char *skip_directories[] = {
+    ".", "..", ".git", "node_modules", ".svn", ".hg", "build", "dist",
+    "__pycache__", ".pytest_cache", ".mypy_cache", ".venv", ".env", "venv", "env",
+    "target", "bin", "obj"
+    // Add more common build/dependency directories if needed
+};
+static const size_t num_skip_directories = sizeof(skip_directories) / sizeof(skip_directories[0]);
+
+static const char *skip_extensions[] = {
+    // Object files, libraries, executables
+    ".o", ".so", ".a", ".dll", ".exe", ".lib", ".dylib", ".class", ".pyc", ".pyo", ".obj", ".elf", ".wasm",
+    // Archives
+    ".zip", ".tar", ".gz", ".bz2", ".xz", ".rar", ".7z", ".jar", ".war", ".ear", ".iso", ".img", ".pkg", ".deb", ".rpm",
+    // Images
+    ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tiff", ".webp", ".svg", ".ico", ".psd", ".ai",
+    // Audio/Video
+    ".mp3", ".wav", ".ogg", ".flac", ".aac", ".m4a", ".mp4", ".avi", ".mkv", ".mov", ".wmv", ".flv",
+    // Documents
+    ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".odt", ".ods", ".odp",
+    // Data/Logs/Backups
+    ".dat", ".bin", ".bak", ".log", ".tmp", ".temp",
+    // Minified assets (check for .min.js etc. handled separately in should_skip_extension)
+    // Editor/System files
+    ".swp", ".swo", ".DS_Store",
+    // Databases
+    ".db", ".sqlite", ".mdb",
+    // Fonts
+    ".ttf", ".otf", ".woff", ".woff2", ".eot"};
+static const size_t num_skip_extensions = sizeof(skip_extensions) / sizeof(skip_extensions[0]);
+
+/* --- Line Finding Functions --- */
 
 /**
- * @brief Boyer-Moore-Horspool search algorithm implementation.
- * Returns total matches found. Optionally counts unique lines or tracks positions. Finds non-overlapping matches.
+ * @brief Find the start of the line containing the given position.
  *
- * @param text_start Pointer to the start of the text buffer.
- * @param text_len Length of text buffer.
- * @param pattern Pattern to search for.
- * @param pattern_len Length of pattern.
- * @param case_sensitive Case sensitivity flag.
- * @param report_limit_offset Offset limit for considering matches/lines.
- * @param count_lines_mode If true, count unique lines and store in line_match_count.
- * @param line_match_count Pointer to store unique line count (used if count_lines_mode is true).
- * @param last_counted_line_start Pointer to track the start offset of the last counted line.
- * @param last_matched_line_end Pointer to track the end offset of the last matched line.
- * @param track_positions If true (and not count_lines_mode), store match positions in result.
- * @param result Pointer to initialized match_result_t (required if track_positions is true).
- * @return uint64_t Total physical match count found within the report limit.
+ * @param text Pointer to the text buffer.
+ * @param max_len Maximum length of the text buffer.
+ * @param pos Position within the text to find the containing line start.
+ * @return Position of the start of the line.
  */
-uint64_t boyer_moore_search(const char *text_start, size_t text_len, const char *pattern, size_t pattern_len,
-                            bool case_sensitive, size_t report_limit_offset, bool count_lines_mode,
-                            uint64_t *line_match_count, size_t *last_counted_line_start, size_t *last_matched_line_end,
-                            bool track_positions, match_result_t *result);
+size_t find_line_start(const char *text, size_t max_len, size_t pos);
 
 /**
- * @brief Knuth-Morris-Pratt (KMP) search algorithm implementation.
- * Finds non-overlapping matches.
- * (Parameters and return value same as boyer_moore_search)
- */
-uint64_t kmp_search(const char *text_start, size_t text_len, const char *pattern, size_t pattern_len,
-                    bool case_sensitive, size_t report_limit_offset, bool count_lines_mode,
-                    uint64_t *line_match_count, size_t *last_counted_line_start, size_t *last_matched_line_end,
-                    bool track_positions, match_result_t *result);
-
-/**
- * @brief Regex-based search using a pre-compiled POSIX regex.
- * Finds non-overlapping matches based on regex engine behavior.
- * (Parameters and return value similar to boyer_moore_search, uses compiled_regex instead of pattern/pattern_len)
- */
-uint64_t regex_search(const char *text_start, size_t text_len, const regex_t *compiled_regex,
-                      size_t report_limit_offset, bool count_lines_mode,
-                      uint64_t *line_match_count, size_t *last_counted_line_start, size_t *last_matched_line_end,
-                      bool track_positions, match_result_t *result);
-
-/**
- * @brief Case-insensitive memory comparison utility function
+ * @brief Find the end of the line containing the given position.
  *
- * @param s1 First string to compare
- * @param s2 Second string to compare
- * @param n Number of bytes to compare
- * @return true if memory regions are equal ignoring case, false otherwise
+ * @param text Pointer to the text buffer.
+ * @param text_len Length of the text buffer.
+ * @param pos Position within the text to find the containing line end.
+ * @return Position of the end of the line (index of the newline or text length).
  */
-bool memory_equals_case_insensitive(const char *s1, const char *s2, size_t n);
-
-/* --- SIMD Placeholders/Implementations --- */
-#ifdef __SSE4_2__
-/**
- * @brief SIMD-accelerated search using SSE4.2 intrinsics (Fallback).
- * (Parameters and return value same as boyer_moore_search)
- */
-uint64_t simd_sse42_search(const char *text_start, size_t text_len, const char *pattern, size_t pattern_len,
-                           bool case_sensitive, size_t report_limit_offset, bool count_lines_mode,
-                           uint64_t *line_match_count, size_t *last_counted_line_start, size_t *last_matched_line_end,
-                           bool track_positions, match_result_t *result);
-#endif
-
-#ifdef __AVX2__
-/**
- * @brief SIMD-accelerated search using AVX2 intrinsics (Fallback).
- * (Parameters and return value same as boyer_moore_search)
- */
-uint64_t simd_avx2_search(const char *text_start, size_t text_len, const char *pattern, size_t pattern_len,
-                          bool case_sensitive, size_t report_limit_offset, bool count_lines_mode,
-                          uint64_t *line_match_count, size_t *last_counted_line_start, size_t *last_matched_line_end,
-                          bool track_positions, match_result_t *result);
-#endif
-
-#ifdef __ARM_NEON
-/**
- * @brief SIMD-accelerated search using ARM NEON intrinsics (Fallback).
- * (Parameters and return value same as boyer_moore_search)
- */
-uint64_t neon_search(const char *text_start, size_t text_len, const char *pattern, size_t pattern_len,
-                     bool case_sensitive, size_t report_limit_offset, bool count_lines_mode,
-                     uint64_t *line_match_count, size_t *last_counted_line_start, size_t *last_matched_line_end,
-                     bool track_positions, match_result_t *result);
-#endif
+size_t find_line_end(const char *text, size_t text_len, size_t pos);
 
 #endif /* KREP_H */
