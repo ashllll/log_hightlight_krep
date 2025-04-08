@@ -84,7 +84,7 @@ const size_t SIMD_MAX_PATTERN_LEN = 0;
 #endif
 
 // Global state (Consider encapsulating if becomes too large)
-static bool color_output_enabled = false;
+static bool color_output_enabled KREP_UNUSED = false;
 static bool only_matching = false; // -o flag
 static bool force_no_simd = false;
 static atomic_bool global_match_found_flag = false; // Used in recursive search
@@ -329,402 +329,507 @@ static int compare_match_positions(const void *a, const void *b)
     return 0;
 }
 
-// Optimized print_matching_items function for better performance with millions of lines
+static bool ensure_line_buffer_capacity(char **buffer_ptr, size_t *capacity_ptr, size_t current_pos, size_t needed)
+{
+    // Check if reallocation is necessary
+    if (current_pos + needed > *capacity_ptr)
+    {
+        size_t new_capacity = *capacity_ptr;
+
+        // Start with a reasonable minimum capacity if it's currently 0
+        if (new_capacity == 0)
+        {
+            new_capacity = (current_pos + needed > 256) ? current_pos + needed : 256;
+        }
+
+        // Double the capacity until it's sufficient
+        while (new_capacity < current_pos + needed)
+        {
+            // Check for potential integer overflow before doubling
+            if (new_capacity > SIZE_MAX / 2)
+            {
+                new_capacity = current_pos + needed; // Try exact required size
+                // Check if exact size calculation itself overflowed
+                if (new_capacity < current_pos + needed)
+                {
+                    fprintf(stderr, "Error: Cannot calculate required capacity for line buffer (overflow).\n");
+                    return false;
+                }
+                break; // Use the calculated exact capacity
+            }
+            new_capacity *= 2;
+        }
+
+        // Perform reallocation
+        char *new_buffer = realloc(*buffer_ptr, new_capacity);
+        if (!new_buffer)
+        {
+            perror("Failed to resize line buffer via realloc");
+            // Keep the old buffer intact, signal failure
+            return false;
+        }
+
+        // Update the caller's buffer pointer and capacity
+        *buffer_ptr = new_buffer;
+        *capacity_ptr = new_capacity;
+    }
+    return true; // Capacity is sufficient
+}
+
 size_t print_matching_items(const char *filename, const char *text, size_t text_len, const match_result_t *result)
 {
+    // Basic validation: No results, no text, or zero matches means nothing to print.
     if (!result || !text || result->count == 0)
         return 0;
 
     size_t items_printed_count = 0;
+    bool only_matching = false;       // Get this from search_params or other global state
+    bool color_output_enabled = true; // Get this from global state or parameters
 
-// Define a larger output buffer (now 4MB for better batching)
-#define OUTPUT_BUFFER_SIZE (4 * 1024 * 1024)
-    setvbuf(stdout, NULL, _IOFBF, OUTPUT_BUFFER_SIZE);
-
-// Preallocate a generous buffer for line formatting (avoid repeated allocations)
-#define LINE_BUFFER_SIZE (128 * 1024) // 128KB initial buffer for formatted output
-    char *line_buffer = malloc(LINE_BUFFER_SIZE);
-    size_t line_buffer_capacity = LINE_BUFFER_SIZE;
-    if (!line_buffer)
+// --- stdout Buffering ---
+// Set a large buffer for stdout to minimize write() system calls
+#define STDOUT_BUFFER_SIZE (4 * 1024 * 1024)
+    char stdout_buf[STDOUT_BUFFER_SIZE];
+    if (setvbuf(stdout, stdout_buf, _IOFBF, STDOUT_BUFFER_SIZE) != 0)
     {
-        perror("Failed to allocate line buffer");
-        return 0;
+        // Non-fatal error, proceed with default buffering
     }
 
-// Preallocate line matches array once to avoid repeated malloc/free
+// Preallocate reusable line buffer for formatting full lines
+#define LINE_BUFFER_INITIAL_SIZE (256 * 1024) // Start with 256KB
+    char *line_buffer = malloc(LINE_BUFFER_INITIAL_SIZE);
+    size_t line_buffer_capacity = line_buffer ? LINE_BUFFER_INITIAL_SIZE : 0;
+    if (!line_buffer)
+    {
+        perror("Failed to allocate initial line buffer");
+        return 0; // Cannot proceed without line buffer
+    }
+
+// Preallocate array to store match positions for a single line (in full lines mode)
 #define MAX_MATCHES_PER_LINE 1024
     match_position_t *line_match_positions = malloc(MAX_MATCHES_PER_LINE * sizeof(match_position_t));
     if (!line_match_positions)
     {
-        perror("Failed to allocate line match buffer");
+        perror("Failed to allocate line match positions buffer");
         free(line_buffer);
-        return 0;
+        return 0; // Cannot proceed
     }
 
+    // Precompute lengths of constant strings (color codes, newline)
+    const char *color_filename = KREP_COLOR_FILENAME;
+    const char *color_reset = KREP_COLOR_RESET;
+    const char *color_separator = KREP_COLOR_SEPARATOR;
+    const char *color_text = KREP_COLOR_TEXT;
+    const char *color_match = KREP_COLOR_MATCH;
+    size_t len_color_filename KREP_UNUSED = color_output_enabled ? strlen(color_filename) : 0;
+    size_t len_color_reset = color_output_enabled ? strlen(color_reset) : 0;
+    size_t len_color_separator KREP_UNUSED = color_output_enabled ? strlen(color_separator) : 0;
+    size_t len_color_text = color_output_enabled ? strlen(color_text) : 0;
+    size_t len_color_match = color_output_enabled ? strlen(color_match) : 0;
+    char newline_char = '\n';
+
+    // ========================================================================
     // --- Mode: Only Matching Parts (-o) ---
+    // ========================================================================
     if (only_matching)
     {
-        // Preformat filename prefix if needed (instead of doing it for each match)
-        char filename_prefix[PATH_MAX + 32] = "";
+// Use a large buffer for batching fwrite calls specifically for -o mode
+#define O_BATCH_BUFFER_SIZE (4 * 1024 * 1024) // 4MB batch buffer
+        char *o_batch_buffer = malloc(O_BATCH_BUFFER_SIZE);
+        if (!o_batch_buffer)
+        {
+            perror("Failed to allocate -o batch buffer");
+            free(line_match_positions);
+            free(line_buffer);
+            return 0; // Cannot proceed
+        }
+        size_t o_batch_pos = 0; // Current position in the batch buffer
+
+        // Precompute the filename prefix string (including colors if enabled)
+        char filename_prefix[PATH_MAX + 64] = ""; // Extra space for colors/separator
+        size_t filename_prefix_len = 0;
         if (filename)
         {
             if (color_output_enabled)
             {
-                snprintf(filename_prefix, sizeof(filename_prefix), "%s%s%s%s:%s",
-                         KREP_COLOR_FILENAME, filename, KREP_COLOR_RESET,
-                         KREP_COLOR_SEPARATOR, KREP_COLOR_RESET);
+                filename_prefix_len = snprintf(filename_prefix, sizeof(filename_prefix), "%s%s%s%s:",
+                                               color_filename, filename, color_reset, color_separator);
             }
             else
             {
-                snprintf(filename_prefix, sizeof(filename_prefix), "%s:", filename);
+                filename_prefix_len = snprintf(filename_prefix, sizeof(filename_prefix), "%s:", filename);
+            }
+            // Clamp length just in case snprintf nears buffer limit or fails
+            if (filename_prefix_len <= 0 || filename_prefix_len >= sizeof(filename_prefix))
+            {
+                filename_prefix_len = (sizeof(filename_prefix) > 1) ? sizeof(filename_prefix) - 1 : 0;
+                if (filename_prefix_len > 0)
+                    filename_prefix[filename_prefix_len] = '\0';
+                else
+                    filename_prefix_len = 0;
             }
         }
 
-        char lineno_buffer[32]; // Buffer for line numbers
+        // Optimized line number tracking state
+        size_t current_line_number = 1;
+        size_t last_scanned_offset = 0;
 
-// Process matches in batches to improve I/O performance
-#define BATCH_SIZE 1000
-        char *batch_buffer = malloc(OUTPUT_BUFFER_SIZE);
-        if (!batch_buffer)
-        {
-            perror("Failed to allocate batch buffer");
-            free(line_buffer);
-            free(line_match_positions);
-            return 0;
-        }
-
-        size_t batch_pos = 0;
-        size_t last_line_number = 0;
-
+        // Iterate through all found match positions
         for (uint64_t i = 0; i < result->count; i++)
         {
             size_t start = result->positions[i].start_offset;
             size_t end = result->positions[i].end_offset;
+
+            // Basic validation: skip matches starting past end of text or invalid ranges
+            if (start >= text_len || start > end)
+            {
+                continue;
+            }
+            // Clamp end offset if it goes beyond text length
+            if (end > text_len)
+            {
+                end = text_len;
+            }
             size_t len = end - start;
 
-            // Skip invalid matches
-            if (start > end || end > text_len || (len == 0 && start == text_len))
-                continue;
-
-            // Find line number (only if needed - avoid calculation if line hasn't changed)
-            size_t line_number;
-            if (i == 0 || start < result->positions[i - 1].start_offset ||
-                memchr(text + result->positions[i - 1].start_offset, '\n', start - result->positions[i - 1].start_offset))
+            // --- Optimized Line Number Calculation ---
+            // Count newlines only in the segment from the last scan position up to the current match start
+            if (start > last_scanned_offset)
             {
-                // Line number calculation needed
-                line_number = 1;
-                for (size_t pos = 0; pos < start; pos++)
+                const char *scan_ptr = text + last_scanned_offset;
+                const char *end_scan_ptr = text + start;
+                while (scan_ptr < end_scan_ptr)
                 {
-                    if (text[pos] == '\n')
+                    const char *newline_found = memchr(scan_ptr, '\n', end_scan_ptr - scan_ptr);
+                    if (newline_found)
                     {
-                        line_number++;
+                        current_line_number++;
+                        scan_ptr = newline_found + 1;
+                    }
+                    else
+                    {
+                        break;
                     }
                 }
-                last_line_number = line_number;
             }
-            else
+            last_scanned_offset = start;
+
+            // Format line number into a temporary buffer
+            char lineno_buffer[21]; // Max 64-bit unsigned integer + ':' + null terminator
+            int lineno_len = snprintf(lineno_buffer, sizeof(lineno_buffer), "%zu:", current_line_number);
+            if (lineno_len <= 0 || (size_t)lineno_len >= sizeof(lineno_buffer))
             {
-                // We're on the same line as previous match
-                line_number = last_line_number;
+                strcpy(lineno_buffer, "ERR:");
+                lineno_len = 4;
             }
 
-            // Format line number
-            int lineno_len = snprintf(lineno_buffer, sizeof(lineno_buffer), "%zu:", line_number);
-
-            // Calculate total length needed for this match output
-            size_t match_output_len =
-                (filename ? strlen(filename_prefix) : 0) +
-                lineno_len +
-                (color_output_enabled ? strlen(KREP_COLOR_MATCH) + strlen(KREP_COLOR_RESET) : 0) +
-                len + 1; // +1 for newline
-
-            // Flush batch if it would overflow
-            if (batch_pos + match_output_len >= OUTPUT_BUFFER_SIZE)
-            {
-                fwrite(batch_buffer, 1, batch_pos, stdout);
-                batch_pos = 0;
-            }
-
-            // Append to batch
-            if (filename)
-            {
-                memcpy(batch_buffer + batch_pos, filename_prefix, strlen(filename_prefix));
-                batch_pos += strlen(filename_prefix);
-            }
-            memcpy(batch_buffer + batch_pos, lineno_buffer, lineno_len);
-            batch_pos += lineno_len;
-
+            // Calculate the total size required in the batch buffer for this entry
+            size_t required = filename_prefix_len + lineno_len + len + 1; // +1 for newline
             if (color_output_enabled)
             {
-                memcpy(batch_buffer + batch_pos, KREP_COLOR_MATCH, strlen(KREP_COLOR_MATCH));
-                batch_pos += strlen(KREP_COLOR_MATCH);
+                required += len_color_match + len_color_reset;
             }
 
-            memcpy(batch_buffer + batch_pos, text + start, len);
-            batch_pos += len;
+            // Flush the batch buffer to stdout if the new entry won't fit
+            if (o_batch_pos + required > O_BATCH_BUFFER_SIZE)
+            {
+                fwrite(o_batch_buffer, 1, o_batch_pos, stdout);
+                o_batch_pos = 0; // Reset batch buffer position
+            }
 
+            // --- Append formatted output to the batch buffer using memcpy ---
+            char *current_write_ptr = o_batch_buffer + o_batch_pos;
+
+            // 1. Filename prefix (if any)
+            if (filename_prefix_len > 0)
+            {
+                memcpy(current_write_ptr, filename_prefix, filename_prefix_len);
+                current_write_ptr += filename_prefix_len;
+            }
+            // 2. Line number
+            memcpy(current_write_ptr, lineno_buffer, lineno_len);
+            current_write_ptr += lineno_len;
+
+            // 3. Start color for match
             if (color_output_enabled)
             {
-                memcpy(batch_buffer + batch_pos, KREP_COLOR_RESET, strlen(KREP_COLOR_RESET));
-                batch_pos += strlen(KREP_COLOR_RESET);
+                memcpy(current_write_ptr, color_match, len_color_match);
+                current_write_ptr += len_color_match;
             }
+            // 4. The matched text itself
+            memcpy(current_write_ptr, text + start, len);
+            current_write_ptr += len;
+            // 5. End color for match
+            if (color_output_enabled)
+            {
+                memcpy(current_write_ptr, color_reset, len_color_reset);
+                current_write_ptr += len_color_reset;
+            }
+            // 6. Newline character
+            *current_write_ptr = newline_char;
+            current_write_ptr++;
 
-            batch_buffer[batch_pos++] = '\n';
+            // Update the current position within the batch buffer
+            o_batch_pos = current_write_ptr - o_batch_buffer;
             items_printed_count++;
-
-            // Periodically flush for responsiveness
-            if (items_printed_count % BATCH_SIZE == 0)
-            {
-                fwrite(batch_buffer, 1, batch_pos, stdout);
-                batch_pos = 0;
-            }
         }
 
-        // Flush any remaining content
-        if (batch_pos > 0)
+        // Flush any remaining content in the batch buffer
+        if (o_batch_pos > 0)
         {
-            fwrite(batch_buffer, 1, batch_pos, stdout);
+            fwrite(o_batch_buffer, 1, o_batch_pos, stdout);
         }
 
-        free(batch_buffer);
+        // Free the batch buffer used for -o mode
+        free(o_batch_buffer);
     }
+    // ========================================================================
     // --- Mode: Full Lines (Default) ---
+    // ========================================================================
     else
     {
-        size_t last_printed_line_start = SIZE_MAX; // Track the start of the last line printed
+        size_t last_printed_line_start = SIZE_MAX; // Track the start offset of the last line printed
 
-        // Preformat filename prefix if needed
-        char filename_prefix[PATH_MAX + 32] = "";
+        // Precompute the filename prefix string (including colors if enabled)
+        char filename_prefix[PATH_MAX + 64] = ""; // Extra space for colors/separator
+        size_t filename_prefix_len = 0;
         if (filename)
         {
             if (color_output_enabled)
             {
-                snprintf(filename_prefix, sizeof(filename_prefix), "%s%s%s%s:%s",
-                         KREP_COLOR_FILENAME, filename, KREP_COLOR_RESET,
-                         KREP_COLOR_SEPARATOR, KREP_COLOR_TEXT);
+                // Full line starts with filename, separator, then text color
+                filename_prefix_len = snprintf(filename_prefix, sizeof(filename_prefix), "%s%s%s%s:%s",
+                                               color_filename, filename, color_reset, color_separator, color_text);
             }
             else
             {
-                snprintf(filename_prefix, sizeof(filename_prefix), "%s:", filename);
+                filename_prefix_len = snprintf(filename_prefix, sizeof(filename_prefix), "%s:", filename);
+            }
+            // Clamp length just in case snprintf nears buffer limit or fails
+            if (filename_prefix_len <= 0 || filename_prefix_len >= sizeof(filename_prefix))
+            {
+                filename_prefix_len = (sizeof(filename_prefix) > 1) ? sizeof(filename_prefix) - 1 : 0;
+                if (filename_prefix_len > 0)
+                    filename_prefix[filename_prefix_len] = '\0';
+                else
+                    filename_prefix_len = 0;
             }
         }
 
+        // Iterate through matches, processing line by line
         uint64_t i = 0;
         while (i < result->count)
         {
-            size_t match_start = result->positions[i].start_offset;
-            size_t match_end = result->positions[i].end_offset;
+            size_t first_match_start_on_line = result->positions[i].start_offset;
 
-            // Basic validation
-            if (match_start >= text_len || match_start > match_end ||
-                (match_start == match_end && match_start == text_len))
+            // Basic validation for the starting match offset
+            if (first_match_start_on_line >= text_len)
             {
-                i++; // Skip invalid match
+                i++; // Skip invalid starting match
                 continue;
             }
-            if (match_end > text_len)
-                match_end = text_len;
 
-            // Find line boundaries
-            size_t line_start = find_line_start(text, text_len, match_start);
-            size_t line_end = find_line_end(text, text_len, line_start);
+            // Find the start of the line containing this match
+            size_t line_start = find_line_start(text, text_len, first_match_start_on_line);
 
-            // Skip if this line has already been printed
+            // Check if this line has already been printed in a previous iteration
             if (line_start == last_printed_line_start)
             {
-                // Advance past all matches on this line
-                while (i < result->count &&
-                       find_line_start(text, text_len, result->positions[i].start_offset) == line_start)
+                // Efficiently skip all subsequent matches that start on this *same* line
+                // Find the end of the current line first
+                size_t current_line_end = find_line_end(text, text_len, line_start);
+                while (i < result->count && result->positions[i].start_offset < current_line_end)
                 {
                     i++;
                 }
-                continue;
+                continue; // Move to the next potential new line
             }
 
-            // --- Collect all matches for this line ---
-            size_t line_match_count = 0;
-            uint64_t line_match_scan_idx = i;
+            // Found a new line to process. Find its end boundary.
+            size_t line_end = find_line_end(text, text_len, line_start);
 
-            while (line_match_scan_idx < result->count && line_match_count < MAX_MATCHES_PER_LINE)
+            // --- Collect all matches that fall within this line ---
+            size_t line_match_count = 0;
+            uint64_t line_match_scan_idx = i; // Start scanning from the current match index
+
+            while (line_match_scan_idx < result->count)
             {
                 size_t k_start = result->positions[line_match_scan_idx].start_offset;
+
+                // If the match starts at or after the end of the current line, we're done collecting for this line.
                 if (k_start >= line_end)
-                    break; // Past current line
-
-                if (k_start >= line_start)
-                { // Match starts on this line
-                    size_t k_end = result->positions[line_match_scan_idx].end_offset;
-                    if (k_end > text_len)
-                        k_end = text_len;
-
-                    line_match_positions[line_match_count].start_offset = k_start;
-                    line_match_positions[line_match_count].end_offset = k_end;
-                    line_match_count++;
+                {
+                    break;
                 }
 
-                line_match_scan_idx++;
+                // Only consider matches that start *on* this line
+                if (k_start >= line_start)
+                {
+                    // Ensure we don't overflow the preallocated line_match_positions buffer
+                    if (line_match_count < MAX_MATCHES_PER_LINE)
+                    {
+                        size_t k_end = result->positions[line_match_scan_idx].end_offset;
+                        // Clamp match end to text length for safety
+                        if (k_end > text_len)
+                            k_end = text_len;
+
+                        // Store the match relative to the start of the text
+                        line_match_positions[line_match_count].start_offset = k_start;
+                        line_match_positions[line_match_count].end_offset = k_end;
+                        line_match_count++;
+                    }
+                    else
+                    {
+                        // Log warning if too many matches on one line
+                        fprintf(stderr, "Warning: Exceeded MAX_MATCHES_PER_LINE (%d) on line starting at offset %zu in %s\n",
+                                MAX_MATCHES_PER_LINE, line_start, filename ? filename : "<stdin>");
+                        break; // Stop collecting matches for this line
+                    }
+                }
+
+                line_match_scan_idx++; // Move to the next potential match
             }
 
-            // --- Format line with highlighting ---
-            size_t buffer_pos = 0;
+            // --- Format the current line with highlighting ---
+            size_t buffer_pos = 0; // Current position in line_buffer
 
-            // Add filename prefix if needed
-            if (filename)
+            // Add filename prefix if applicable
+            if (filename_prefix_len > 0)
             {
-                size_t prefix_len = strlen(filename_prefix);
-
-                // Ensure buffer capacity
-                if (buffer_pos + prefix_len >= line_buffer_capacity)
+                // Ensure capacity for prefix
+                if (!ensure_line_buffer_capacity(&line_buffer, &line_buffer_capacity, buffer_pos, filename_prefix_len))
                 {
-                    size_t new_capacity = line_buffer_capacity * 2;
-                    char *new_buffer = realloc(line_buffer, new_capacity);
-                    if (!new_buffer)
-                    {
-                        perror("Failed to resize line buffer");
-                        break;
-                    }
-                    line_buffer = new_buffer;
-                    line_buffer_capacity = new_capacity;
+                    goto line_format_error;
                 }
-
-                memcpy(line_buffer + buffer_pos, filename_prefix, prefix_len);
-                buffer_pos += prefix_len;
+                memcpy(line_buffer + buffer_pos, filename_prefix, filename_prefix_len);
+                buffer_pos += filename_prefix_len;
             }
             else if (color_output_enabled)
             {
-                // Start with text color if no filename but color is enabled
-                size_t color_len = strlen(KREP_COLOR_TEXT);
-                memcpy(line_buffer + buffer_pos, KREP_COLOR_TEXT, color_len);
-                buffer_pos += color_len;
+                // If no filename, but color is on, start the line with the default text color
+                if (!ensure_line_buffer_capacity(&line_buffer, &line_buffer_capacity, buffer_pos, len_color_text))
+                {
+                    goto line_format_error;
+                }
+                memcpy(line_buffer + buffer_pos, color_text, len_color_text);
+                buffer_pos += len_color_text;
             }
 
-            // Process the line segments (regular text + highlighted matches)
-            size_t current_pos_on_line = line_start;
-
+            // Iterate through the line, copying text segments and highlighted matches
+            size_t current_pos_on_line = line_start; // Track position within the original text
             for (size_t k = 0; k < line_match_count; ++k)
             {
                 size_t k_start = line_match_positions[k].start_offset;
                 size_t k_end = line_match_positions[k].end_offset;
 
-                // Ensure we have enough buffer space for this segment
-                size_t segment_max_len = (k_start - current_pos_on_line) + // Text before match
-                                         (k_end - k_start) +               // Match text
-                                         (color_output_enabled ? 20 : 0);  // Color codes
+                // Clamp match boundaries strictly to the current line's boundaries
+                if (k_start < line_start)
+                    k_start = line_start;
+                if (k_end > line_end)
+                    k_end = line_end;
+                if (k_start >= k_end)
+                    continue;
 
-                if (buffer_pos + segment_max_len >= line_buffer_capacity)
-                {
-                    size_t new_capacity = line_buffer_capacity * 2;
-                    char *new_buffer = realloc(line_buffer, new_capacity);
-                    if (!new_buffer)
-                    {
-                        perror("Failed to resize line buffer");
-                        goto end_line_processing; // Use goto for clean error exit
-                    }
-                    line_buffer = new_buffer;
-                    line_buffer_capacity = new_capacity;
-                }
-
-                // Add text before the match
+                // 1. Copy text segment BEFORE the current match
                 if (k_start > current_pos_on_line)
                 {
-                    size_t len = k_start - current_pos_on_line;
-                    memcpy(line_buffer + buffer_pos, text + current_pos_on_line, len);
-                    buffer_pos += len;
+                    size_t len_before = k_start - current_pos_on_line;
+                    if (!ensure_line_buffer_capacity(&line_buffer, &line_buffer_capacity, buffer_pos, len_before))
+                    {
+                        goto line_format_error;
+                    }
+                    memcpy(line_buffer + buffer_pos, text + current_pos_on_line, len_before);
+                    buffer_pos += len_before;
                 }
 
-                // Add the highlighted match
-                if (k_start < k_end)
+                // 2. Copy the highlighted MATCH segment
+                size_t match_len = k_end - k_start;
+                size_t required_for_match = match_len;
+                if (color_output_enabled)
                 {
-                    if (color_output_enabled)
-                    {
-                        size_t color_len = strlen(KREP_COLOR_MATCH);
-                        memcpy(line_buffer + buffer_pos, KREP_COLOR_MATCH, color_len);
-                        buffer_pos += color_len;
-                    }
-
-                    size_t match_len = k_end - k_start;
-                    memcpy(line_buffer + buffer_pos, text + k_start, match_len);
-                    buffer_pos += match_len;
-
-                    if (color_output_enabled)
-                    {
-                        size_t color_len = strlen(KREP_COLOR_TEXT);
-                        memcpy(line_buffer + buffer_pos, KREP_COLOR_TEXT, color_len);
-                        buffer_pos += color_len;
-                    }
+                    // Need space for start color code and end color code (back to text color)
+                    required_for_match += len_color_match + len_color_text;
+                }
+                if (!ensure_line_buffer_capacity(&line_buffer, &line_buffer_capacity, buffer_pos, required_for_match))
+                {
+                    goto line_format_error;
                 }
 
-                // Update current position
-                current_pos_on_line = (k_end > current_pos_on_line) ? k_end : current_pos_on_line;
+                char *write_ptr = line_buffer + buffer_pos; // Pointer for this segment
+                if (color_output_enabled)
+                {
+                    memcpy(write_ptr, color_match, len_color_match);
+                    write_ptr += len_color_match;
+                }
+                memcpy(write_ptr, text + k_start, match_len);
+                write_ptr += match_len;
+                if (color_output_enabled)
+                {
+                    memcpy(write_ptr, color_text, len_color_text); // Switch back to text color after match
+                }
+                buffer_pos += required_for_match; // Update total buffer position
+
+                // Update the position marker within the original text line
+                current_pos_on_line = k_end;
             }
 
-            // Add any remaining text after the last match
+            // 3. Copy any remaining text AFTER the last match until the line end
             if (current_pos_on_line < line_end)
             {
-                size_t remaining_len = line_end - current_pos_on_line;
-
-                // Ensure buffer capacity for remaining text
-                if (buffer_pos + remaining_len >= line_buffer_capacity)
+                size_t len_after = line_end - current_pos_on_line;
+                if (!ensure_line_buffer_capacity(&line_buffer, &line_buffer_capacity, buffer_pos, len_after))
                 {
-                    size_t new_capacity = line_buffer_capacity * 2;
-                    char *new_buffer = realloc(line_buffer, new_capacity);
-                    if (!new_buffer)
-                    {
-                        perror("Failed to resize line buffer");
-                        goto end_line_processing; // Use goto for clean error exit
-                    }
-                    line_buffer = new_buffer;
-                    line_buffer_capacity = new_capacity;
+                    goto line_format_error;
                 }
-
-                memcpy(line_buffer + buffer_pos, text + current_pos_on_line, remaining_len);
-                buffer_pos += remaining_len;
+                memcpy(line_buffer + buffer_pos, text + current_pos_on_line, len_after);
+                buffer_pos += len_after;
             }
 
-            // Reset color at end of line
+            // 4. Add final color reset and newline character
+            size_t required_for_end = 1; // For newline
             if (color_output_enabled)
             {
-                const char *reset = KREP_COLOR_RESET;
-                size_t reset_len = strlen(reset);
-
-                // Ensure buffer capacity for reset code
-                if (buffer_pos + reset_len >= line_buffer_capacity)
-                {
-                    size_t new_capacity = line_buffer_capacity * 2;
-                    char *new_buffer = realloc(line_buffer, new_capacity);
-                    if (!new_buffer)
-                    {
-                        perror("Failed to resize line buffer");
-                        goto end_line_processing; // Use goto for clean error exit
-                    }
-                    line_buffer = new_buffer;
-                    line_buffer_capacity = new_capacity;
-                }
-
-                memcpy(line_buffer + buffer_pos, reset, reset_len);
-                buffer_pos += reset_len;
+                required_for_end += len_color_reset;
+            }
+            if (!ensure_line_buffer_capacity(&line_buffer, &line_buffer_capacity, buffer_pos, required_for_end))
+            {
+                goto line_format_error;
             }
 
-            // Add newline
-            line_buffer[buffer_pos++] = '\n';
+            char *write_ptr = line_buffer + buffer_pos; // Pointer for this segment
+            if (color_output_enabled)
+            {
+                memcpy(write_ptr, color_reset, len_color_reset);
+                write_ptr += len_color_reset;
+            }
+            *write_ptr = newline_char;
+            buffer_pos += required_for_end; // Update total buffer position
 
-            // Write the line to stdout
+            // --- Write the fully formatted line to stdout ---
             fwrite(line_buffer, 1, buffer_pos, stdout);
 
+            // Update tracking variables
             items_printed_count++;
-            last_printed_line_start = line_start;
+            last_printed_line_start = line_start; // Mark this line as printed
 
-            // Advance the main loop index past all matches on this line
+            // Advance the main loop index 'i' past all matches processed for this line
             i = line_match_scan_idx;
+            continue;
 
-        end_line_processing:; // Empty statement needed after label
+        line_format_error:
+            // Handle errors during line formatting (e.g., buffer reallocation failure)
+            fprintf(stderr, "Error formatting line starting at offset %zu for file %s\n",
+                    line_start, filename ? filename : "<stdin>");
+            // Skip to the next line
+            i = line_match_scan_idx; // Skip past all matches on this line
+            continue;
         }
     }
 
-    // Clean up
+    // --- Cleanup ---
     free(line_buffer);
     free(line_match_positions);
-    fflush(stdout);
+    fflush(stdout); // Ensure all buffered output is written
 
     return items_printed_count;
 }
