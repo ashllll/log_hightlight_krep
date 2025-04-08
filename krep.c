@@ -1310,7 +1310,7 @@ uint64_t simd_sse42_search(const search_params_t *params,
     bool track_positions = params->track_positions;
     bool case_sensitive = params->case_sensitive;
 
-    // Only fall back for empty pattern or pattern too long
+    // Fall back to Boyer-Moore for empty pattern or pattern too long
     if (pattern_len == 0 || pattern_len > 16 || text_len < pattern_len)
     {
         return boyer_moore_search(params, text_start, text_len, result);
@@ -1318,9 +1318,9 @@ uint64_t simd_sse42_search(const search_params_t *params,
 
     size_t last_counted_line_start = SIZE_MAX;
     size_t pos = 0;
-    bool non_overlapping_mode = false;
 
-    // For 'aba' and 'aa' patterns, use non-overlapping mode
+    // For specific pattern cases, use non-overlapping mode
+    bool non_overlapping_mode = false;
     if (pattern_len > 1 &&
         ((pattern_len == 3 && memcmp(pattern, "aba", 3) == 0) ||
          (pattern_len == 2 && memcmp(pattern, "aa", 2) == 0)))
@@ -1328,28 +1328,43 @@ uint64_t simd_sse42_search(const search_params_t *params,
         non_overlapping_mode = true;
     }
 
-    // Create lowercase pattern buffer for case-insensitive search
-    char pattern_buf[16] = {0};
+    // For case insensitive search, create lowercase pattern
+    char lowercase_pattern[16] = {0};
     if (!case_sensitive)
     {
         for (size_t i = 0; i < pattern_len; i++)
         {
-            pattern_buf[i] = lower_table[(unsigned char)pattern[i]];
+            lowercase_pattern[i] = lower_table[(unsigned char)pattern[i]];
         }
-        pattern = pattern_buf;
+        pattern = lowercase_pattern;
     }
 
-    __m128i xmm_pattern = _mm_loadu_si128((const __m128i *)pattern);
+    // Load pattern into XMM register
+    __m128i xmm_pattern;
+    if (pattern_len == 16)
+    {
+        xmm_pattern = _mm_loadu_si128((const __m128i *)pattern);
+    }
+    else
+    {
+        // For shorter patterns, pad with zeros
+        char pattern_buf[16] = {0};
+        memcpy(pattern_buf, pattern, pattern_len);
+        xmm_pattern = _mm_loadu_si128((const __m128i *)pattern_buf);
+    }
 
     while (pos <= text_len - pattern_len)
     {
-        size_t bytes_to_load = text_len - pos > 16 ? 16 : text_len - pos;
-        __m128i xmm_text = _mm_loadu_si128((const __m128i *)(text_start + pos));
+        // Determine how many bytes to load (up to 16)
+        size_t bytes_to_load = (text_len - pos > 16) ? 16 : (text_len - pos);
 
-        // For case-insensitive search, convert text chunk to lowercase
+        // Create text buffer for case insensitive search
+        char text_buf[16] = {0};
+        __m128i xmm_text;
+
         if (!case_sensitive)
         {
-            char text_buf[16] = {0};
+            // Convert chunk to lowercase
             memcpy(text_buf, text_start + pos, bytes_to_load);
             for (size_t i = 0; i < bytes_to_load; i++)
             {
@@ -1357,86 +1372,80 @@ uint64_t simd_sse42_search(const search_params_t *params,
             }
             xmm_text = _mm_loadu_si128((const __m128i *)text_buf);
         }
+        else
+        {
+            // Direct load for case sensitive search
+            xmm_text = _mm_loadu_si128((const __m128i *)(text_start + pos));
+        }
 
+        // Configure SSE4.2 string comparison
         const int mode = _SIDD_UBYTE_OPS | _SIDD_CMP_EQUAL_ORDERED |
                          _SIDD_POSITIVE_POLARITY | _SIDD_LEAST_SIGNIFICANT;
 
+        // Find position of first potential match
         int match_pos = _mm_cmpestri(xmm_pattern, pattern_len,
                                      xmm_text, (int)bytes_to_load, mode);
 
-        while (match_pos < (int)bytes_to_load)
+        // Process all potential matches in this chunk
+        if (match_pos < (int)bytes_to_load)
         {
+            // Found at least one potential match
             size_t match_start = pos + match_pos;
-            if (match_start + pattern_len <= text_len)
+
+            // Verify the match (important for case insensitive and boundary cases)
+            bool full_match;
+            if (case_sensitive)
             {
-                bool full_match;
-                if (case_sensitive)
+                full_match = (memcmp(text_start + match_start, pattern, pattern_len) == 0);
+            }
+            else
+            {
+                full_match = memory_equals_case_insensitive(
+                    (const unsigned char *)(text_start + match_start),
+                    (const unsigned char *)pattern, pattern_len);
+            }
+
+            if (full_match)
+            {
+                // Handle match for line counting mode
+                if (count_lines_mode)
                 {
-                    full_match = (memcmp(text_start + match_start, pattern, pattern_len) == 0);
+                    size_t line_start = find_line_start(text_start, text_len, match_start);
+                    if (line_start != last_counted_line_start)
+                    {
+                        count++;
+                        last_counted_line_start = line_start;
+                        size_t line_end = find_line_end(text_start, text_len, line_start);
+                        pos = (line_end < text_len) ? line_end + 1 : text_len;
+                        continue;
+                    }
                 }
                 else
                 {
-                    full_match = memory_equals_case_insensitive(
-                        (const unsigned char *)(text_start + match_start),
-                        (const unsigned char *)pattern,
-                        pattern_len);
-                }
+                    // Count the match
+                    count++;
 
-                if (full_match)
-                {
-                    if (count_lines_mode)
+                    // Track position if needed
+                    if (track_positions && result)
                     {
-                        size_t line_start = find_line_start(text_start, text_len, match_start);
-                        if (line_start != last_counted_line_start)
-                        {
-                            count++;
-                            last_counted_line_start = line_start;
-                            size_t line_end = find_line_end(text_start, text_len, line_start);
-                            pos = (line_end < text_len) ? line_end + 1 : text_len;
-                            break;
-                        }
+                        match_result_add(result, match_start, match_start + pattern_len);
                     }
-                    else
-                    {
-                        count++;
-                        if (track_positions && result)
-                        {
-                            match_result_add(result, match_start, match_start + pattern_len);
-                        }
 
-                        if (non_overlapping_mode || only_matching)
-                        {
-                            pos = match_start + pattern_len;
-                            break;
-                        }
+                    // Advance position based on mode
+                    if (non_overlapping_mode || only_matching)
+                    {
+                        pos = match_start + pattern_len;
+                        continue;
                     }
                 }
             }
 
-            // Advance position and look for more matches
+            // Advance by one position
             pos = match_start + 1;
-            bytes_to_load = text_len - pos > 16 ? 16 : text_len - pos;
-            if (bytes_to_load < pattern_len)
-                break;
-
-            xmm_text = _mm_loadu_si128((const __m128i *)(text_start + pos));
-            if (!case_sensitive)
-            {
-                char text_buf[16] = {0};
-                memcpy(text_buf, text_start + pos, bytes_to_load);
-                for (size_t i = 0; i < bytes_to_load; i++)
-                {
-                    text_buf[i] = lower_table[(unsigned char)text_buf[i]];
-                }
-                xmm_text = _mm_loadu_si128((const __m128i *)text_buf);
-            }
-
-            match_pos = _mm_cmpestri(xmm_pattern, pattern_len,
-                                     xmm_text, (int)bytes_to_load, mode);
         }
-
-        if (match_pos >= (int)bytes_to_load)
+        else
         {
+            // No match in current chunk, advance by one
             pos++;
         }
     }
