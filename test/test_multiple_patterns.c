@@ -1,5 +1,5 @@
 /**
- * Test suite for multiple pattern search capabilities in krep
+ * Test suite for multiple pattern search functions
  */
 
 #include <stdio.h>
@@ -7,17 +7,17 @@
 #include <string.h>
 #include <stdbool.h>
 #include <time.h>
-#include <assert.h>
-#include <regex.h>
-#include <inttypes.h> // For PRIu64 format specifier
+#include <inttypes.h> // Add this include for PRIu64 macro
 
-/* Define TESTING before including headers */
+/* Define TESTING for test builds */
 #ifndef TESTING
 #define TESTING
 #endif
 
-/* Include main krep functions for testing */
-#include "../krep.h"     // Main krep header
+/* Define TEST_MULTIPLE_PATTERNS_FILE to get the right function signatures in test_compat.h */
+#define TEST_MULTIPLE_PATTERNS_FILE
+
+/* Include the test headers */
 #include "test_krep.h"   // Test header
 #include "test_compat.h" // Compatibility wrappers
 
@@ -302,6 +302,180 @@ void run_multipattern_tests(void)
     test_case_insensitive_multipattern();
     test_position_tracking_multipattern();
     test_multipattern_performance();
+
+    printf("\n--- Completed Multiple Pattern Tests ---\n");
+}
+
+/*
+ * Test finding multiple patterns in text
+ * Tests Aho-Corasick with different search patterns and input strings
+ */
+void test_multiple_patterns_basic(void)
+{
+    printf("\n=== Multiple Pattern Basic Tests ===\n");
+
+    // Test Case 1: Multiple distinct patterns
+    const char *text1 = "The quick brown fox jumps over the lazy dog";
+    const char *patterns1[] = {"quick", "fox", "lazy"};
+    size_t pattern_lens1[] = {5, 3, 4};
+
+    uint64_t matches1 = aho_corasick_search_compat(
+        text1, strlen(text1),
+        patterns1, pattern_lens1, 3,
+        true, SIZE_MAX);
+
+    TEST_ASSERT(matches1 == 3, "Aho-Corasick finds all 3 distinct patterns");
+
+    // Test Case 2: Overlapping patterns
+    const char *text2 = "abababa"; // Pattern "aba" appears multiple times overlapping
+    const char *patterns2[] = {"aba"};
+    size_t pattern_lens2[] = {3};
+
+    uint64_t matches2 = aho_corasick_search_compat(
+        text2, strlen(text2),
+        patterns2, pattern_lens2, 1,
+        true, SIZE_MAX);
+
+    TEST_ASSERT(matches2 == 3, "Aho-Corasick finds multiple overlapping patterns");
+
+    // Test Case 3: Case insensitivity
+    const char *text3 = "The QUICK brown FOX jumps over the lazy DOG";
+    const char *patterns3[] = {"quick", "fox", "dog"};
+    size_t pattern_lens3[] = {5, 3, 3};
+
+    uint64_t matches3_case_sensitive = aho_corasick_search_compat(
+        text3, strlen(text3),
+        patterns3, pattern_lens3, 3,
+        true, SIZE_MAX);
+
+    uint64_t matches3_case_insensitive = aho_corasick_search_compat(
+        text3, strlen(text3),
+        patterns3, pattern_lens3, 3,
+        false, SIZE_MAX);
+
+    TEST_ASSERT(matches3_case_sensitive == 0, "Aho-Corasick with case sensitivity finds 0 matches");
+    TEST_ASSERT(matches3_case_insensitive == 3, "Aho-Corasick with case insensitivity finds 3 matches");
+}
+
+/*
+ * Test edge cases for multiple pattern search
+ */
+void test_multiple_patterns_edge_cases(void)
+{
+    printf("\n=== Multiple Pattern Edge Cases ===\n");
+
+    // Test Case 1: Empty text
+    const char *empty_text = "";
+    const char *patterns1[] = {"test", "pattern"};
+    size_t pattern_lens1[] = {4, 7};
+
+    uint64_t matches1 = aho_corasick_search_compat(
+        empty_text, 0,
+        patterns1, pattern_lens1, 2,
+        true, SIZE_MAX);
+
+    TEST_ASSERT(matches1 == 0, "Aho-Corasick handles empty text correctly");
+
+    // Test Case 2: Empty pattern
+    const char *text2 = "Some text to search";
+    const char *patterns2[] = {""};
+    size_t pattern_lens2[] = {0};
+
+    uint64_t matches2 = aho_corasick_search_compat(
+        text2, strlen(text2),
+        patterns2, pattern_lens2, 1,
+        true, SIZE_MAX);
+
+    TEST_ASSERT(matches2 == 0, "Aho-Corasick handles empty pattern correctly");
+
+    // Test Case 3: Multiple empty patterns
+    const char *patterns3[] = {"", ""};
+    size_t pattern_lens3[] = {0, 0};
+
+    uint64_t matches3 = aho_corasick_search_compat(
+        text2, strlen(text2),
+        patterns3, pattern_lens3, 2,
+        true, SIZE_MAX);
+
+    TEST_ASSERT(matches3 == 0, "Aho-Corasick handles multiple empty patterns");
+}
+
+/*
+ * Test performance of individual vs. combined pattern search
+ */
+void test_pattern_search_performance(void)
+{
+    printf("\n=== Multiple Pattern Performance Comparison ===\n");
+
+    // Create a larger text
+    size_t text_size = 1024 * 1024; // 1MB
+    char *text = malloc(text_size + 1);
+    if (!text)
+    {
+        fprintf(stderr, "Failed to allocate text buffer\n");
+        return;
+    }
+
+    // Fill with repeating alphabet
+    for (size_t i = 0; i < text_size; i++)
+    {
+        text[i] = 'a' + (i % 26);
+    }
+    text[text_size] = '\0';
+
+    // Create patterns to search
+    const char *patterns[] = {"abc", "def", "ghi", "jkl", "mno"};
+    size_t pattern_lens[] = {3, 3, 3, 3, 3};
+    size_t num_patterns = sizeof(patterns) / sizeof(patterns[0]);
+
+    // Time individual searches
+    clock_t start_individual = clock();
+    uint64_t total_matches_individual = 0;
+
+    for (size_t p = 0; p < num_patterns; p++)
+    {
+        total_matches_individual += boyer_moore_search(
+            text, text_size,
+            patterns[p], pattern_lens[p],
+            true, SIZE_MAX);
+    }
+
+    clock_t end_individual = clock();
+    double time_individual = (double)(end_individual - start_individual) / CLOCKS_PER_SEC;
+
+    // Time combined search
+    clock_t start_combined = clock();
+    uint64_t total_matches_combined = aho_corasick_search_compat(
+        text, text_size,
+        patterns, pattern_lens, num_patterns,
+        true, SIZE_MAX);
+    clock_t end_combined = clock();
+    double time_combined = (double)(end_combined - start_combined) / CLOCKS_PER_SEC;
+
+    printf("  Individual searches: %" PRIu64 " matches in %.6f seconds\n",
+           total_matches_individual, time_individual);
+    printf("  Combined search: %" PRIu64 " matches in %.6f seconds\n",
+           total_matches_combined, time_combined);
+
+    TEST_ASSERT(total_matches_individual == total_matches_combined,
+                "Individual and combined searches find same number of matches");
+
+    // We're not testing actual performance, just that the code runs
+    // A strict performance assertion might fail on different machines
+
+    free(text);
+}
+
+/*
+ * Run all multiple pattern tests
+ */
+void run_multiple_patterns_tests(void)
+{
+    printf("\n--- Running Multiple Pattern Tests ---\n");
+
+    test_multiple_patterns_basic();
+    test_multiple_patterns_edge_cases();
+    test_pattern_search_performance();
 
     printf("\n--- Completed Multiple Pattern Tests ---\n");
 }

@@ -214,12 +214,78 @@ static inline uint64_t memchr_short_search_compat(
     return memchr_short_search(&params, text, effective_len, NULL);
 }
 
-/* Redefine the function names to use the compatibility versions */
+/*
+ * Special functions for test_krep.c that accept search_params_t and extract fields
+ * These have completely different names to avoid conflicts with the compat functions
+ */
+
+static inline uint64_t test_bridge_boyer_moore(
+    const search_params_t *params,
+    const char *text, size_t text_len,
+    match_result_t *result)
+{
+    (void)result; // Suppress unused parameter warning
+
+    // Extract the parameters we need from the params struct
+    const char *pattern = params->pattern;
+    size_t pattern_len = params->pattern_len;
+    bool case_sensitive = params->case_sensitive;
+
+    // Call the compatibility wrapper with SIZE_MAX for report_limit_offset
+    return boyer_moore_search_compat(text, text_len, pattern, pattern_len,
+                                     case_sensitive, SIZE_MAX);
+}
+
+static inline uint64_t test_bridge_kmp(
+    const search_params_t *params,
+    const char *text, size_t text_len,
+    match_result_t *result)
+{
+    (void)result; // Suppress unused parameter warning
+
+    // Extract the parameters we need from the params struct
+    const char *pattern = params->pattern;
+    size_t pattern_len = params->pattern_len;
+    bool case_sensitive = params->case_sensitive;
+
+    // Call the compatibility wrapper with SIZE_MAX for report_limit_offset
+    return kmp_search_compat(text, text_len, pattern, pattern_len,
+                             case_sensitive, SIZE_MAX);
+}
+
+/* Bridge function for regex_search with params struct */
+static inline uint64_t test_bridge_regex(
+    const search_params_t *params,
+    const char *text, size_t text_len,
+    match_result_t *result)
+{
+    (void)result; // Suppress unused parameter warning
+
+    // Extract the regex from the params struct
+    const regex_t *compiled_regex = params->compiled_regex;
+    if (!compiled_regex)
+    {
+        // If no regex compiled, return 0
+        return 0;
+    }
+
+    // Call the compatibility wrapper with SIZE_MAX for report_limit_offset
+    return regex_search_compat(text, text_len, compiled_regex, SIZE_MAX);
+}
+
+/*
+ * Conditional compilation based on which test file is using this header.
+ * Define TEST_MULTIPLE_PATTERNS when compiling test_multiple_patterns.c
+ * to get the old style function signatures.
+ */
+
+// Check if we're compiling test_multiple_patterns.c (identified by unique string)
+#if defined(TEST_MULTIPLE_PATTERNS_FILE)
+// For test_multiple_patterns.c - use original compatibility style (direct arguments)
 #define boyer_moore_search boyer_moore_search_compat
 #define kmp_search kmp_search_compat
 #define regex_search regex_search_compat
 #define aho_corasick_search aho_corasick_search_compat
-#define memchr_search memchr_search_compat
 #define memchr_short_search memchr_short_search_compat
 #ifdef __SSE4_2__
 #define simd_sse42_search simd_sse42_search_compat
@@ -229,6 +295,23 @@ static inline uint64_t memchr_short_search_compat(
 #endif
 #ifdef __ARM_NEON
 #define neon_search neon_search_compat
+#endif
+#else
+// For test_krep.c and other tests - use bridge functions that work with struct params
+#define boyer_moore_search test_bridge_boyer_moore
+#define kmp_search test_bridge_kmp
+#define regex_search test_bridge_regex
+#define aho_corasick_search aho_corasick_search_compat // No bridge function for this yet
+#define memchr_short_search memchr_short_search_compat // No bridge function for this yet
+#ifdef __SSE4_2__
+#define simd_sse42_search simd_sse42_search_compat
+#endif
+#ifdef __AVX2__
+#define simd_avx2_search simd_avx2_search_compat
+#endif
+#ifdef __ARM_NEON
+#define neon_search neon_search_compat
+#endif
 #endif
 
 #endif /* TESTING */
