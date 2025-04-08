@@ -1298,13 +1298,10 @@ uint64_t regex_search(const search_params_t *params,
 // Case-insensitive SIMD is significantly more complex.
 
 #if KREP_USE_SSE42
-// SSE4.2 search using PCMPESTRI (Updated Signature)
-// Returns line count (-c) or match count (other modes).
-// Adds positions to 'result' if params->track_positions is true.
 uint64_t simd_sse42_search(const search_params_t *params,
                            const char *text_start,
                            size_t text_len,
-                           match_result_t *result) // For position tracking (can be NULL)
+                           match_result_t *result)
 {
     uint64_t count = 0; // Line or match count
     const char *pattern = params->pattern;
@@ -1363,72 +1360,77 @@ uint64_t simd_sse42_search(const search_params_t *params,
         // Find the position of the first potential match
         int match_pos = _mm_cmpestri(xmm_pattern, pattern_len, xmm_text, (int)bytes_to_load, mode);
 
-        // If no match in this segment, advance to the next position
-        if (match_pos == 16 || match_pos >= (int)bytes_to_load)
+        // Use a loop to find multiple matches in this chunk
+        while (match_pos < (int)bytes_to_load)
         {
-            pos++;
-            continue;
-        }
-
-        // Verify the match (necessary for correctness as PCMPESTRI might find partial matches)
-        size_t match_start = pos + match_pos;
-
-        // We need to check if we have enough room for the pattern
-        if (match_start + pattern_len <= text_len)
-        {
-            // Explicit verification of the full pattern match
-            bool full_match = (memcmp(text_start + match_start, pattern, pattern_len) == 0);
-
-            if (full_match)
+            size_t match_start = pos + match_pos;
+            if (match_start + pattern_len <= text_len)
             {
-                // Handle the match
-                if (count_lines_mode)
+                bool full_match = (memcmp(text_start + match_start, pattern, pattern_len) == 0);
+                if (full_match)
                 {
-                    // For line counting mode, count each line only once
-                    size_t line_start = find_line_start(text_start, text_len, match_start);
-                    if (line_start != last_counted_line_start)
+                    // Handle the match
+                    if (count_lines_mode)
                     {
+                        // For line counting mode, count each line only once
+                        size_t line_start = find_line_start(text_start, text_len, match_start);
+                        if (line_start != last_counted_line_start)
+                        {
+                            count++;
+                            last_counted_line_start = line_start;
+
+                            // Advance to the end of the line
+                            size_t line_end = find_line_end(text_start, text_len, line_start);
+                            pos = (line_end < text_len) ? line_end + 1 : text_len;
+                            break; // Exit inner loop
+                        }
+                    }
+                    else
+                    {
+                        // For regular match counting
                         count++;
-                        last_counted_line_start = line_start;
 
-                        // Advance to the end of the line
-                        size_t line_end = find_line_end(text_start, text_len, line_start);
-                        pos = (line_end < text_len) ? line_end + 1 : text_len;
-                        continue;
+                        // Record position if tracking
+                        if (track_positions && result)
+                        {
+                            match_result_add(result, match_start, match_start + pattern_len);
+                        }
                     }
-                }
-                else
-                {
-                    // For regular match counting
-                    count++;
 
-                    // Record position if tracking
-                    if (track_positions && result)
+                    // Advance by pattern_len for non-overlapping matches mode (or -o)
+                    // or by 1 for overlapping matches
+                    if (non_overlapping_mode || only_matching)
                     {
-                        match_result_add(result, match_start, match_start + pattern_len);
+                        pos = match_start + pattern_len;
+                        break; // Exit inner loop
                     }
-                }
-
-                // Advance by pattern_len for non-overlapping matches mode (or -o)
-                // or by 1 for overlapping matches
-                if (non_overlapping_mode || only_matching)
-                {
-                    pos = match_start + pattern_len;
+                    else
+                    {
+                        pos = match_start + 1;
+                    }
                 }
                 else
                 {
-                    pos = match_start + 1;
+                    pos++;
                 }
             }
             else
             {
-                // Not a full match, advance one character
                 pos++;
             }
+
+            // Recompute available bytes and match_pos for next possible match in same chunk
+            bytes_to_load = (text_len - pos > 16) ? 16 : (text_len - pos);
+            if (bytes_to_load < pattern_len)
+                break;
+
+            xmm_text = _mm_loadu_si128((const __m128i *)(text_start + pos));
+            match_pos = _mm_cmpestri(xmm_pattern, pattern_len, xmm_text, (int)bytes_to_load, mode);
         }
-        else
+
+        // If no more matches in this chunk, move to next position
+        if (match_pos >= (int)bytes_to_load)
         {
-            // Not enough room for pattern, advance one character
             pos++;
         }
     }
