@@ -383,67 +383,121 @@ size_t print_matching_items(const char *filename, const char *text, size_t text_
         return 0;
 
     size_t items_printed_count = 0;
-    bool only_matching = false;       // Get this from search_params or other global state
-    bool color_output_enabled = true; // Get this from global state or parameters
 
-// --- stdout Buffering ---
-// Set a large buffer for stdout to minimize write() system calls
-#define STDOUT_BUFFER_SIZE (4 * 1024 * 1024)
-    char stdout_buf[STDOUT_BUFFER_SIZE];
-    if (setvbuf(stdout, stdout_buf, _IOFBF, STDOUT_BUFFER_SIZE) != 0)
+    // Get global configuration values
+    extern bool only_matching;        // External variable declared in krep.h
+    extern bool color_output_enabled; // External variable declared in krep.h
+
+// --- Setup enhanced buffering ---
+// Use a larger stdout buffer than default to reduce syscalls
+#define STDOUT_BUFFER_SIZE (8 * 1024 * 1024) // 8MB stdout buffer
+    char *stdout_buf = malloc(STDOUT_BUFFER_SIZE);
+    if (stdout_buf)
     {
-        // Non-fatal error, proceed with default buffering
+        // Use full buffering for stdout
+        if (setvbuf(stdout, stdout_buf, _IOFBF, STDOUT_BUFFER_SIZE) != 0)
+        {
+            // Non-fatal error, proceed with default buffering
+            free(stdout_buf);
+            stdout_buf = NULL;
+        }
     }
 
-// Preallocate reusable line buffer for formatting full lines
-#define LINE_BUFFER_INITIAL_SIZE (256 * 1024) // Start with 256KB
+// --- Preallocate reusable line buffer for formatting ---
+#define LINE_BUFFER_INITIAL_SIZE (512 * 1024) // Start with 512KB (doubled from original)
     char *line_buffer = malloc(LINE_BUFFER_INITIAL_SIZE);
     size_t line_buffer_capacity = line_buffer ? LINE_BUFFER_INITIAL_SIZE : 0;
     if (!line_buffer)
     {
         perror("Failed to allocate initial line buffer");
+        if (stdout_buf)
+        {
+            free(stdout_buf);
+        }
         return 0; // Cannot proceed without line buffer
     }
 
-// Preallocate array to store match positions for a single line (in full lines mode)
-#define MAX_MATCHES_PER_LINE 1024
+// --- Preallocate match position storage ---
+#define MAX_MATCHES_PER_LINE 2048 // Doubled from original to handle more dense matches
     match_position_t *line_match_positions = malloc(MAX_MATCHES_PER_LINE * sizeof(match_position_t));
     if (!line_match_positions)
     {
         perror("Failed to allocate line match positions buffer");
         free(line_buffer);
+        if (stdout_buf)
+        {
+            free(stdout_buf);
+        }
         return 0; // Cannot proceed
     }
 
-    // Precompute lengths of constant strings (color codes, newline)
+    // --- Precompute constant string lengths ---
+    // Cache color codes and their lengths for better performance
     const char *color_filename = KREP_COLOR_FILENAME;
     const char *color_reset = KREP_COLOR_RESET;
     const char *color_separator = KREP_COLOR_SEPARATOR;
     const char *color_text = KREP_COLOR_TEXT;
     const char *color_match = KREP_COLOR_MATCH;
-    size_t len_color_filename KREP_UNUSED = color_output_enabled ? strlen(color_filename) : 0;
+
+    // Precompute lengths to avoid repeated strlen calls
     size_t len_color_reset = color_output_enabled ? strlen(color_reset) : 0;
-    size_t len_color_separator KREP_UNUSED = color_output_enabled ? strlen(color_separator) : 0;
     size_t len_color_text = color_output_enabled ? strlen(color_text) : 0;
     size_t len_color_match = color_output_enabled ? strlen(color_match) : 0;
-    char newline_char = '\n';
 
     // ========================================================================
     // --- Mode: Only Matching Parts (-o) ---
     // ========================================================================
     if (only_matching)
     {
-// Use a large buffer for batching fwrite calls specifically for -o mode
-#define O_BATCH_BUFFER_SIZE (4 * 1024 * 1024) // 4MB batch buffer
+// Use a larger batch buffer for aggregating output before system calls
+#define O_BATCH_BUFFER_SIZE (8 * 1024 * 1024) // 8MB batch buffer (doubled from original)
         char *o_batch_buffer = malloc(O_BATCH_BUFFER_SIZE);
         if (!o_batch_buffer)
         {
             perror("Failed to allocate -o batch buffer");
             free(line_match_positions);
             free(line_buffer);
+            if (stdout_buf)
+            {
+                free(stdout_buf);
+            }
             return 0; // Cannot proceed
         }
         size_t o_batch_pos = 0; // Current position in the batch buffer
+
+        // --- Fast line number tracking ---
+        // Precompute newline positions for faster line number calculation
+        size_t *newline_positions = NULL;
+        size_t num_newlines = 0;
+        size_t newline_capacity = 0;
+
+        // Only precompute newline positions if we have more than a threshold number of matches
+        if (result->count > 10)
+        {
+            // Count newlines first to allocate properly
+            for (size_t i = 0; i < text_len; i++)
+            {
+                if (text[i] == '\n')
+                    num_newlines++;
+            }
+
+            // Allocate array for newline positions
+            newline_capacity = num_newlines + 1; // +1 for the implicit newline at the end
+            newline_positions = malloc(newline_capacity * sizeof(size_t));
+
+            // Populate the array if allocation succeeded
+            if (newline_positions)
+            {
+                size_t idx = 0;
+                for (size_t i = 0; i < text_len; i++)
+                {
+                    if (text[i] == '\n')
+                    {
+                        newline_positions[idx++] = i;
+                    }
+                }
+            }
+        }
 
         // Precompute the filename prefix string (including colors if enabled)
         char filename_prefix[PATH_MAX + 64] = ""; // Extra space for colors/separator
@@ -459,63 +513,109 @@ size_t print_matching_items(const char *filename, const char *text, size_t text_
             {
                 filename_prefix_len = snprintf(filename_prefix, sizeof(filename_prefix), "%s:", filename);
             }
-            // Clamp length just in case snprintf nears buffer limit or fails
+
+            // Safety check on filename_prefix length
             if (filename_prefix_len <= 0 || filename_prefix_len >= sizeof(filename_prefix))
             {
                 filename_prefix_len = (sizeof(filename_prefix) > 1) ? sizeof(filename_prefix) - 1 : 0;
                 if (filename_prefix_len > 0)
+                {
                     filename_prefix[filename_prefix_len] = '\0';
+                }
                 else
+                {
                     filename_prefix_len = 0;
+                }
             }
         }
 
-        // Optimized line number tracking state
+        // --- Process matches in batches for better performance ---
         size_t current_line_number = 1;
         size_t last_scanned_offset = 0;
+        size_t last_newline_idx = 0;
 
-        // Iterate through all found match positions
+        // Pre-allocate a static buffer for line numbers to avoid repeated format calls
+        char lineno_buffer[32]; // Large enough for any reasonable line number
+
+        // Iterate through all matches in order
         for (uint64_t i = 0; i < result->count; i++)
         {
             size_t start = result->positions[i].start_offset;
             size_t end = result->positions[i].end_offset;
 
-            // Basic validation: skip matches starting past end of text or invalid ranges
+            // Validation and bounds checking
             if (start >= text_len || start > end)
             {
-                continue;
+                continue; // Skip invalid match
             }
-            // Clamp end offset if it goes beyond text length
             if (end > text_len)
             {
-                end = text_len;
+                end = text_len; // Clamp end offset
             }
             size_t len = end - start;
 
             // --- Optimized Line Number Calculation ---
-            // Count newlines only in the segment from the last scan position up to the current match start
-            if (start > last_scanned_offset)
+            // Faster line number calculation using precomputed newline positions when available
+            if (newline_positions && num_newlines > 0)
             {
-                const char *scan_ptr = text + last_scanned_offset;
-                const char *end_scan_ptr = text + start;
-                while (scan_ptr < end_scan_ptr)
+                // Binary search to find the position in the newlines array
+                size_t left = 0;
+                size_t right = num_newlines - 1;
+
+                // Find the first newline position greater than start
+                while (left <= right)
                 {
-                    const char *newline_found = memchr(scan_ptr, '\n', end_scan_ptr - scan_ptr);
-                    if (newline_found)
+                    size_t mid = left + (right - left) / 2;
+                    if (newline_positions[mid] < start)
                     {
-                        current_line_number++;
-                        scan_ptr = newline_found + 1;
+                        left = mid + 1;
                     }
                     else
                     {
-                        break;
+                        if (mid == 0 || newline_positions[mid - 1] < start)
+                        {
+                            last_newline_idx = mid;
+                            break;
+                        }
+                        right = mid - 1;
+                    }
+                }
+
+                // Line number is the index of the first newline after start, plus 1
+                // (or the count of newlines before start, plus 1)
+                if (last_newline_idx > 0 && newline_positions[last_newline_idx - 1] >= start)
+                {
+                    last_newline_idx--;
+                }
+                current_line_number = last_newline_idx + 1;
+            }
+            else
+            {
+                // Fallback: Count newlines in the segment from last position to current match
+                if (start > last_scanned_offset)
+                {
+                    const char *scan_ptr = text + last_scanned_offset;
+                    const char *end_scan_ptr = text + start;
+
+                    // Fast newline counting with memchr
+                    while (scan_ptr < end_scan_ptr)
+                    {
+                        const void *newline_found = memchr(scan_ptr, '\n', end_scan_ptr - scan_ptr);
+                        if (newline_found)
+                        {
+                            current_line_number++;
+                            scan_ptr = (const char *)newline_found + 1;
+                        }
+                        else
+                        {
+                            break;
+                        }
                     }
                 }
             }
-            last_scanned_offset = start;
+            last_scanned_offset = start; // Update for next iteration
 
             // Format line number into a temporary buffer
-            char lineno_buffer[21]; // Max 64-bit unsigned integer + ':' + null terminator
             int lineno_len = snprintf(lineno_buffer, sizeof(lineno_buffer), "%zu:", current_line_number);
             if (lineno_len <= 0 || (size_t)lineno_len >= sizeof(lineno_buffer))
             {
@@ -533,43 +633,50 @@ size_t print_matching_items(const char *filename, const char *text, size_t text_
             // Flush the batch buffer to stdout if the new entry won't fit
             if (o_batch_pos + required > O_BATCH_BUFFER_SIZE)
             {
-                fwrite(o_batch_buffer, 1, o_batch_pos, stdout);
+                if (fwrite(o_batch_buffer, 1, o_batch_pos, stdout) != o_batch_pos)
+                {
+                    perror("Error writing batch buffer to stdout");
+                }
                 o_batch_pos = 0; // Reset batch buffer position
             }
 
-            // --- Append formatted output to the batch buffer using memcpy ---
+            // --- Efficient append to batch buffer using direct pointer manipulation ---
             char *current_write_ptr = o_batch_buffer + o_batch_pos;
 
-            // 1. Filename prefix (if any)
+            // 1. Copy filename prefix (if any)
             if (filename_prefix_len > 0)
             {
                 memcpy(current_write_ptr, filename_prefix, filename_prefix_len);
                 current_write_ptr += filename_prefix_len;
             }
-            // 2. Line number
+
+            // 2. Copy line number
             memcpy(current_write_ptr, lineno_buffer, lineno_len);
             current_write_ptr += lineno_len;
 
-            // 3. Start color for match
+            // 3. Start color for match (if enabled)
             if (color_output_enabled)
             {
                 memcpy(current_write_ptr, color_match, len_color_match);
                 current_write_ptr += len_color_match;
             }
-            // 4. The matched text itself
+
+            // 4. Copy the matched text
             memcpy(current_write_ptr, text + start, len);
             current_write_ptr += len;
-            // 5. End color for match
+
+            // 5. End color for match (if enabled)
             if (color_output_enabled)
             {
                 memcpy(current_write_ptr, color_reset, len_color_reset);
                 current_write_ptr += len_color_reset;
             }
-            // 6. Newline character
-            *current_write_ptr = newline_char;
+
+            // 6. Add newline
+            *current_write_ptr = '\n';
             current_write_ptr++;
 
-            // Update the current position within the batch buffer
+            // Update batch buffer position
             o_batch_pos = current_write_ptr - o_batch_buffer;
             items_printed_count++;
         }
@@ -580,8 +687,12 @@ size_t print_matching_items(const char *filename, const char *text, size_t text_
             fwrite(o_batch_buffer, 1, o_batch_pos, stdout);
         }
 
-        // Free the batch buffer used for -o mode
+        // Free resources
         free(o_batch_buffer);
+        if (newline_positions)
+        {
+            free(newline_positions);
+        }
     }
     // ========================================================================
     // --- Mode: Full Lines (Default) ---
@@ -605,15 +716,32 @@ size_t print_matching_items(const char *filename, const char *text, size_t text_
             {
                 filename_prefix_len = snprintf(filename_prefix, sizeof(filename_prefix), "%s:", filename);
             }
-            // Clamp length just in case snprintf nears buffer limit or fails
+
+            // Safety check on filename_prefix length
             if (filename_prefix_len <= 0 || filename_prefix_len >= sizeof(filename_prefix))
             {
                 filename_prefix_len = (sizeof(filename_prefix) > 1) ? sizeof(filename_prefix) - 1 : 0;
                 if (filename_prefix_len > 0)
+                {
                     filename_prefix[filename_prefix_len] = '\0';
+                }
                 else
+                {
                     filename_prefix_len = 0;
+                }
             }
+        }
+
+// --- Create a line batch buffer for full line mode ---
+// This buffer aggregates multiple formatted lines before writing to stdout
+#define LINE_BATCH_BUFFER_SIZE (8 * 1024 * 1024) // 8MB for batch output
+        char *line_batch_buffer = malloc(LINE_BATCH_BUFFER_SIZE);
+        size_t line_batch_pos = 0;
+
+        if (!line_batch_buffer)
+        {
+            // Not fatal, fall back to direct output without batching
+            fprintf(stderr, "Warning: Failed to allocate line batch buffer, performance may be reduced\n");
         }
 
         // Iterate through matches, processing line by line
@@ -629,7 +757,7 @@ size_t print_matching_items(const char *filename, const char *text, size_t text_
                 continue;
             }
 
-            // Find the start of the line containing this match
+            // Find the start of the line containing this match (optimization: use memrchr if available)
             size_t line_start = find_line_start(text, text_len, first_match_start_on_line);
 
             // Check if this line has already been printed in a previous iteration
@@ -766,6 +894,7 @@ size_t print_matching_items(const char *filename, const char *text, size_t text_
                 if (color_output_enabled)
                 {
                     memcpy(write_ptr, color_text, len_color_text); // Switch back to text color after match
+                    write_ptr += len_color_text;
                 }
                 buffer_pos += required_for_match; // Update total buffer position
 
@@ -802,11 +931,31 @@ size_t print_matching_items(const char *filename, const char *text, size_t text_
                 memcpy(write_ptr, color_reset, len_color_reset);
                 write_ptr += len_color_reset;
             }
-            *write_ptr = newline_char;
+            *write_ptr = '\n';
             buffer_pos += required_for_end; // Update total buffer position
 
-            // --- Write the fully formatted line to stdout ---
-            fwrite(line_buffer, 1, buffer_pos, stdout);
+            // --- Efficient batch output handling ---
+            if (line_batch_buffer)
+            {
+                // Check if line will fit in batch buffer, flush if needed
+                if (line_batch_pos + buffer_pos > LINE_BATCH_BUFFER_SIZE)
+                {
+                    if (fwrite(line_batch_buffer, 1, line_batch_pos, stdout) != line_batch_pos)
+                    {
+                        perror("Error writing line batch buffer to stdout");
+                    }
+                    line_batch_pos = 0;
+                }
+
+                // Copy formatted line to batch buffer
+                memcpy(line_batch_buffer + line_batch_pos, line_buffer, buffer_pos);
+                line_batch_pos += buffer_pos;
+            }
+            else
+            {
+                // Direct output if batch buffer not available
+                fwrite(line_buffer, 1, buffer_pos, stdout);
+            }
 
             // Update tracking variables
             items_printed_count++;
@@ -824,12 +973,27 @@ size_t print_matching_items(const char *filename, const char *text, size_t text_
             i = line_match_scan_idx; // Skip past all matches on this line
             continue;
         }
+
+        // Flush any remaining content in the line batch buffer
+        if (line_batch_buffer && line_batch_pos > 0)
+        {
+            fwrite(line_batch_buffer, 1, line_batch_pos, stdout);
+        }
+
+        free(line_batch_buffer);
     }
 
     // --- Cleanup ---
     free(line_buffer);
     free(line_match_positions);
-    fflush(stdout); // Ensure all buffered output is written
+
+    // Flush any remaining buffered output and restore default buffering
+    fflush(stdout);
+    if (stdout_buf)
+    {
+        setvbuf(stdout, NULL, _IOLBF, 0); // Reset to default line buffering
+        free(stdout_buf);
+    }
 
     return items_printed_count;
 }
@@ -1458,61 +1622,189 @@ uint64_t simd_sse42_search(const search_params_t *params,
         xmm_pattern = _mm_loadu_si128((const __m128i *)pattern_buf);
     }
 
+    // Prepare buffer for case-insensitive processing (if needed)
+    char text_buf[16] = {0};
+    __m128i xmm_text;
+
+    // OPTIMIZATION: Pre-compute comparison mask for specific pattern length
+    const int mode = _SIDD_UBYTE_OPS | _SIDD_CMP_EQUAL_ORDERED |
+                     _SIDD_POSITIVE_POLARITY | _SIDD_LEAST_SIGNIFICANT;
+
+    // OPTIMIZATION: For text segments batching when case_sensitive is false
+    size_t batch_buffer_capacity = 4096; // Process 4KB at a time for case-insensitive
+    char *batch_buffer = NULL;
+
+    if (!case_sensitive && text_len >= 16)
+    {
+        // Allocate batch buffer for case-insensitive processing
+        batch_buffer = malloc(batch_buffer_capacity);
+        if (!batch_buffer)
+        {
+            // Fallback to Boyer-Moore if allocation fails
+            return boyer_moore_search(params, text_start, text_len, result);
+        }
+    }
+
     while (pos <= text_len - pattern_len)
     {
-        // Determine how many bytes to load (up to 16)
-        size_t bytes_to_load = (text_len - pos > 16) ? 16 : (text_len - pos);
-
-        // Create text buffer for case insensitive search
-        char text_buf[16] = {0};
-        __m128i xmm_text;
+        size_t chunk_end = pos;
+        size_t match_start = SIZE_MAX;
+        int match_pos = -1;
 
         if (!case_sensitive)
         {
-            // Convert chunk to lowercase
-            memcpy(text_buf, text_start + pos, bytes_to_load);
-            for (size_t i = 0; i < bytes_to_load; i++)
+            // Case-insensitive search with batching optimization
+            if (batch_buffer && text_len - pos >= 16)
             {
-                text_buf[i] = lower_table[(unsigned char)text_buf[i]];
-            }
-            xmm_text = _mm_loadu_si128((const __m128i *)text_buf);
-        }
-        else
-        {
-            // Direct load for case sensitive search
-            xmm_text = _mm_loadu_si128((const __m128i *)(text_start + pos));
-        }
+                // Determine batch size to process
+                size_t batch_size = (text_len - pos < batch_buffer_capacity) ? text_len - pos : batch_buffer_capacity;
 
-        // Configure SSE4.2 string comparison
-        const int mode = _SIDD_UBYTE_OPS | _SIDD_CMP_EQUAL_ORDERED |
-                         _SIDD_POSITIVE_POLARITY | _SIDD_LEAST_SIGNIFICANT;
+                // Don't make batch too small - ensure at least one potential match can fit
+                if (batch_size < pattern_len)
+                    batch_size = pattern_len;
 
-        // Find position of first potential match
-        int match_pos = _mm_cmpestri(xmm_pattern, pattern_len,
-                                     xmm_text, (int)bytes_to_load, mode);
+                // Convert chunk to lowercase in bulk
+                for (size_t i = 0; i < batch_size; i++)
+                {
+                    batch_buffer[i] = lower_table[(unsigned char)text_start[pos + i]];
+                }
 
-        // Process all potential matches in this chunk
-        if (match_pos < (int)bytes_to_load)
-        {
-            // Found at least one potential match
-            size_t match_start = pos + match_pos;
+                // Process the lowercase batch
+                size_t batch_pos = 0;
+                while (batch_pos <= batch_size - pattern_len)
+                {
+                    // Load next 16 bytes or less from batch
+                    size_t bytes_to_load = (batch_size - batch_pos >= 16) ? 16 : (batch_size - batch_pos);
 
-            // Verify the match (important for case insensitive and boundary cases)
-            bool full_match;
-            if (case_sensitive)
-            {
-                full_match = (memcmp(text_start + match_start, pattern, pattern_len) == 0);
+                    if (bytes_to_load < pattern_len)
+                        break; // Not enough bytes left for a match
+
+                    xmm_text = _mm_loadu_si128((const __m128i *)(batch_buffer + batch_pos));
+
+                    // Find position of first potential match
+                    match_pos = _mm_cmpestri(xmm_pattern, pattern_len,
+                                             xmm_text, (int)bytes_to_load, mode);
+
+                    if (match_pos < (int)bytes_to_load)
+                    {
+                        // Found match, calculate absolute position
+                        match_start = pos + batch_pos + match_pos;
+
+                        // Record match
+                        if (count_lines_mode)
+                        {
+                            size_t line_start = find_line_start(text_start, text_len, match_start);
+                            if (line_start != last_counted_line_start)
+                            {
+                                count++;
+                                last_counted_line_start = line_start;
+
+                                // Skip to end of line for -c mode
+                                size_t line_end = find_line_end(text_start, text_len, line_start);
+                                pos = line_end + 1;
+                            }
+                            else
+                            {
+                                // Already counted this line, move past this match
+                                batch_pos += match_pos + 1;
+                            }
+                        }
+                        else
+                        {
+                            count++;
+                            if (track_positions && result)
+                            {
+                                match_result_add(result, match_start, match_start + pattern_len);
+                            }
+
+                            // Advance within the batch
+                            if (non_overlapping_mode)
+                                batch_pos += match_pos + pattern_len;
+                            else
+                                batch_pos += match_pos + 1;
+                        }
+                    }
+                    else
+                    {
+                        // No match in current 16 bytes, advance within the batch
+                        batch_pos += bytes_to_load - pattern_len + 1;
+                    }
+                }
+
+                // Advance pos past what we've processed minus (pattern_len-1) to catch potential overlaps
+                pos += batch_size - (pattern_len - 1);
             }
             else
             {
-                full_match = memory_equals_case_insensitive(
-                    (const unsigned char *)(text_start + match_start),
-                    (const unsigned char *)pattern, pattern_len);
-            }
+                // Fallback for small text segments or when allocation failed
+                // Process just 16 bytes at a time (original logic)
+                size_t bytes_to_load = (text_len - pos >= 16) ? 16 : (text_len - pos);
 
-            if (full_match)
+                // Convert chunk to lowercase
+                memcpy(text_buf, text_start + pos, bytes_to_load);
+                for (size_t i = 0; i < bytes_to_load; i++)
+                {
+                    text_buf[i] = lower_table[(unsigned char)text_buf[i]];
+                }
+                xmm_text = _mm_loadu_si128((const __m128i *)text_buf);
+
+                // Find position of first potential match
+                match_pos = _mm_cmpestri(xmm_pattern, pattern_len,
+                                         xmm_text, (int)bytes_to_load, mode);
+
+                if (match_pos < (int)bytes_to_load)
+                {
+                    match_start = pos + match_pos;
+
+                    // Record match (similar to above)
+                    if (count_lines_mode)
+                    {
+                        size_t line_start = find_line_start(text_start, text_len, match_start);
+                        if (line_start != last_counted_line_start)
+                        {
+                            count++;
+                            last_counted_line_start = line_start;
+                            pos = find_line_end(text_start, text_len, line_start) + 1;
+                        }
+                        else
+                        {
+                            pos = match_start + 1;
+                        }
+                    }
+                    else
+                    {
+                        count++;
+                        if (track_positions && result)
+                        {
+                            match_result_add(result, match_start, match_start + pattern_len);
+                        }
+                        pos = match_start + 1;
+                    }
+                }
+                else
+                {
+                    // No match in current 16 bytes, advance
+                    pos++;
+                }
+            }
+        }
+        else
+        {
+            // Case-sensitive search (original optimized path)
+            size_t bytes_to_load = (text_len - pos >= 16) ? 16 : (text_len - pos);
+
+            // Direct load for case sensitive search
+            xmm_text = _mm_loadu_si128((const __m128i *)(text_start + pos));
+
+            // Find position of first potential match
+            match_pos = _mm_cmpestri(xmm_pattern, pattern_len,
+                                     xmm_text, (int)bytes_to_load, mode);
+
+            if (match_pos < (int)bytes_to_load)
             {
-                // Handle match for line counting mode
+                // Found a match at position pos + match_pos
+                match_start = pos + match_pos;
+
                 if (count_lines_mode)
                 {
                     size_t line_start = find_line_start(text_start, text_len, match_start);
@@ -1520,39 +1812,41 @@ uint64_t simd_sse42_search(const search_params_t *params,
                     {
                         count++;
                         last_counted_line_start = line_start;
-                        size_t line_end = find_line_end(text_start, text_len, line_start);
-                        pos = (line_end < text_len) ? line_end + 1 : text_len;
-                        continue;
+                        pos = find_line_end(text_start, text_len, line_start) + 1;
+                    }
+                    else
+                    {
+                        pos = match_start + 1;
                     }
                 }
                 else
                 {
-                    // Count the match
                     count++;
-
-                    // Track position if needed
                     if (track_positions && result)
                     {
                         match_result_add(result, match_start, match_start + pattern_len);
                     }
 
-                    // Advance position based on mode
-                    if (non_overlapping_mode || only_matching)
-                    {
+                    // Non-overlapping mode: advance by pattern length instead of 1
+                    if (non_overlapping_mode)
                         pos = match_start + pattern_len;
-                        continue;
-                    }
+                    else
+                        pos = match_start + 1;
                 }
             }
+            else
+            {
+                // We can safely advance by (16 - pattern_len + 1) because the SIMD search
+                // would have found any match starting up to (16 - pattern_len) bytes in
+                pos += (bytes_to_load - pattern_len + 1) > 0 ? (bytes_to_load - pattern_len + 1) : 1;
+            }
+        }
+    }
 
-            // Advance by one position
-            pos = match_start + 1;
-        }
-        else
-        {
-            // No match in current chunk, advance by one
-            pos++;
-        }
+    // Free allocated memory
+    if (batch_buffer)
+    {
+        free(batch_buffer);
     }
 
     return count;
@@ -3102,68 +3396,42 @@ static bool should_skip_extension(const char *filename)
 {
     // Find the last dot in the filename
     const char *dot = strrchr(filename, '.');
+
     // If no dot, or dot is at the beginning (hidden file), or dot is the last character,
     // it's not an extension we check here.
     if (!dot || dot == filename || *(dot + 1) == '\0')
     {
-        return false;
+        return false; // Not an extension we care about
     }
 
-    // Handle common double extensions like .tar.gz before checking single extensions
-    const char *prev_dot = dot - 1;
-    // Scan backwards from the last dot to find the previous dot or path separator
-    while (prev_dot > filename && *prev_dot != '.' && *prev_dot != '/')
+    // Check for .min. files (minified files like .min.js, .min.css)
+    // These are common enough to merit a special check
+    const char *min_ext = strstr(dot, ".min.");
+    if (min_ext && min_ext == dot)
     {
-        prev_dot--;
+        return true; // Skip minified files
     }
-    // If we found a previous dot (and it's not the start of the filename)
-    if (prev_dot > filename && *prev_dot == '.')
+
+    // Check against the predefined list
+    for (size_t i = 0; i < num_skip_extensions; ++i)
     {
-        // Check common archive double extensions first
-        if ((strcasecmp(prev_dot, ".tar.gz") == 0) ||
-            (strcasecmp(prev_dot, ".tar.bz2") == 0) ||
-            (strcasecmp(prev_dot, ".tar.xz") == 0))
+        if (strcasecmp(dot, skip_extensions[i]) == 0)
         {
             return true;
         }
-        // Check other potential multi-part extensions from the skip list (e.g., .min.js)
-        for (size_t i = 0; i < num_skip_extensions; ++i)
-        {
-            // Check if the extension to skip contains multiple dots (simple check)
-            if (strchr(skip_extensions[i] + 1, '.') != NULL)
-            { // Check for dot after the first one
-                // Check from the potential start of the multi-part extension
-                size_t skip_len = strlen(skip_extensions[i]);
-                size_t prev_dot_len = strlen(prev_dot);
-                if (prev_dot_len >= skip_len && strcasecmp(prev_dot + prev_dot_len - skip_len, skip_extensions[i]) == 0)
-                {
-                    return true;
-                }
-            }
-        }
     }
 
-    // Check the single extension (from the last 'dot' onwards) against the skip list
-    for (size_t i = 0; i < num_skip_extensions; ++i)
-    {
-        // Only compare if the skip list entry looks like a single extension
-        if (strchr(skip_extensions[i] + 1, '.') == NULL)
-        {
-            if (strcasecmp(dot, skip_extensions[i]) == 0)
-            {
-                return true;
-            }
-        }
-    }
     return false;
 }
 
-// Basic check for binary files (looks for null bytes in the initial buffer)
-static bool is_binary_file(const char *filename)
+// Check if a file appears to be binary
+static bool is_binary_file(const char *filepath)
 {
-    FILE *f = fopen(filename, "rb");
+    FILE *f = fopen(filepath, "rb");
     if (!f)
+    {
         return false; // Treat fopen error as non-binary (might be permission issue)
+    }
 
     char buffer[BINARY_CHECK_BUFFER_SIZE];
     // Read a chunk from the beginning of the file
