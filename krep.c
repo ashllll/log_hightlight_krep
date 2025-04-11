@@ -132,38 +132,66 @@ bool match_result_add(match_result_t *result, size_t start_offset, size_t end_of
     if (!result)
         return false;
 
+    // Check if we need to expand the capacity
     if (result->count >= result->capacity)
     {
-        // Prevent potential integer overflow during capacity calculation
-        if (result->capacity > SIZE_MAX / (2 * sizeof(match_position_t)))
+        // Fast path for initial allocation
+        if (result->capacity == 0)
         {
-            fprintf(stderr, "Error: Potential result capacity overflow during reallocation.\n");
-            return false;
+            size_t initial_capacity = 16;
+            result->positions = malloc(initial_capacity * sizeof(match_position_t));
+            if (!result->positions)
+            {
+                perror("Error allocating initial match positions array");
+                return false;
+            }
+            result->capacity = initial_capacity;
         }
-        uint64_t new_capacity = (result->capacity == 0) ? 16 : result->capacity * 2;
-        // Handle potential overflow if capacity is already huge
-        if (new_capacity < result->capacity)
-            new_capacity = SIZE_MAX / sizeof(match_position_t);
-        if (new_capacity <= result->capacity)
-        { // Check if new_capacity couldn't grow
-            fprintf(stderr, "Error: Cannot increase result capacity further.\n");
-            return false;
-        }
+        else
+        {
+            // Calculate new capacity with overflow protection
+            uint64_t new_capacity;
 
-        match_position_t *new_positions = realloc(result->positions, new_capacity * sizeof(match_position_t));
-        if (!new_positions)
-        {
-            perror("Error reallocating match positions");
-            // Keep the old data, but signal failure
-            return false;
+            // Check for potential overflow in capacity doubling
+            if (result->capacity > SIZE_MAX / (2 * sizeof(match_position_t)))
+            {
+                // Try to allocate maximum safe capacity if doubling would overflow
+                new_capacity = SIZE_MAX / sizeof(match_position_t);
+
+                // If we can't grow further, signal failure
+                if (new_capacity <= result->capacity)
+                {
+                    fprintf(stderr, "Error: Cannot increase result capacity further (at %" PRIu64 " matches).\n",
+                            result->capacity);
+                    return false;
+                }
+            }
+            else
+            {
+                // Normal doubling strategy for growth
+                new_capacity = result->capacity * 2;
+            }
+
+            // Perform the reallocation
+            match_position_t *new_positions = realloc(result->positions,
+                                                      new_capacity * sizeof(match_position_t));
+            if (!new_positions)
+            {
+                perror("Error reallocating match positions array");
+                // Existing array is preserved by realloc semantics
+                return false;
+            }
+
+            result->positions = new_positions;
+            result->capacity = new_capacity;
         }
-        result->positions = new_positions;
-        result->capacity = new_capacity;
     }
 
+    // Add the new match position
     result->positions[result->count].start_offset = start_offset;
     result->positions[result->count].end_offset = end_offset;
     result->count++;
+
     return true;
 }
 
