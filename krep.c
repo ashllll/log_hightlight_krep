@@ -2593,53 +2593,63 @@ const char *get_algorithm_name(search_func_t func)
 // Search a string (remains single-threaded)
 int search_string(const search_params_t *params, const char *text)
 {
-    size_t text_len = strlen(text);
-    uint64_t final_count = 0;                 // Line count (-c) or match count (-co or default/o)
-    match_result_t *matches = NULL;           // For tracking positions
-    int result_code = 1;                      // Default: no match
-    search_params_t current_params = *params; // Make a mutable copy if needed for regex compilation
-    regex_t compiled_regex_local;             // Local storage for compiled regex
-    char *combined_regex_pattern = NULL;      // Buffer for combined regex
+    // Initialize resources to NULL/0 for safe cleanup
+    size_t text_len = 0;
+    uint64_t final_count = 0;
+    match_result_t *matches = NULL;
+    int result_code = 1; // Default: no match
+    regex_t compiled_regex_local;
+    char *combined_regex_pattern = NULL;
+    bool regex_compiled = false;
+    search_params_t current_params = *params; // Make a mutable copy
 
-    // Basic validation
+    // --- Validation ---
     if (current_params.num_patterns == 0)
-    { // Check new field
+    {
         fprintf(stderr, "Error: No pattern specified.\n");
         return 2;
     }
+
     if (!text)
     {
         fprintf(stderr, "Error: NULL text in search_string.\n");
         return 2;
     }
 
-    // Validate pattern length only for literal search
+    text_len = strlen(text);
+
+    // Validate pattern length for literal search
     if (!current_params.use_regex)
     {
         for (size_t i = 0; i < current_params.num_patterns; ++i)
         {
-            if (current_params.pattern_lens[i] == 0 && current_params.num_patterns > 1)
-            { // Allow single empty pattern for AC
-                fprintf(stderr, "Error: Empty pattern provided for literal search with multiple patterns.\n");
-                return 2;
-            }
             // Allow single empty pattern
-            if (current_params.pattern_lens[i] == 0 && current_params.num_patterns == 1)
+            if (current_params.pattern_lens[i] == 0)
             {
-                // OK, Aho-Corasick handles this
+                if (current_params.num_patterns > 1)
+                {
+                    fprintf(stderr, "Error: Empty pattern provided for literal search with multiple patterns.\n");
+                    return 2;
+                }
+                // Single empty pattern is OK, Aho-Corasick handles this
             }
             else if (current_params.pattern_lens[i] > MAX_PATTERN_LENGTH)
             {
-                fprintf(stderr, "Error: Pattern '%s' too long (max %d).\n", current_params.patterns[i], MAX_PATTERN_LENGTH);
+                fprintf(stderr, "Error: Pattern '%s' too long (max %d).\n",
+                        current_params.patterns[i], MAX_PATTERN_LENGTH);
                 return 2;
             }
         }
     }
 
+    // --- Resource Allocation ---
+
     // Allocate results structure if tracking positions
     if (current_params.track_positions)
     {
-        matches = match_result_init(16); // Small initial capacity for strings
+        // Start with a reasonable capacity based on text length
+        uint64_t initial_capacity = text_len > 10000 ? 1000 : 16;
+        matches = match_result_init(initial_capacity);
         if (!matches)
         {
             fprintf(stderr, "Error: Cannot allocate memory for match results.\n");
@@ -2647,25 +2657,30 @@ int search_string(const search_params_t *params, const char *text)
         }
     }
 
-    // Compile regex if needed (handles combined regex internally if necessary)
+    // Compile regex if needed
     if (current_params.use_regex)
     {
         const char *regex_to_compile = NULL;
+
+        // Handle multiple patterns (combine with OR)
         if (current_params.num_patterns > 1)
         {
-            // Combine multiple regex patterns with '|'
+            // Calculate required buffer size
             size_t total_len = 0;
             for (size_t i = 0; i < current_params.num_patterns; ++i)
             {
                 total_len += current_params.pattern_lens[i] + 3; // pattern + () + |
             }
-            combined_regex_pattern = malloc(total_len + 1); // +1 for null terminator
+
+            // Allocate and build combined pattern
+            combined_regex_pattern = malloc(total_len + 1);
             if (!combined_regex_pattern)
             {
                 fprintf(stderr, "krep: Failed to allocate memory for combined regex.\n");
-                match_result_free(matches);
-                return 2;
+                goto cleanup;
             }
+
+            // Construct the combined pattern string
             char *ptr = combined_regex_pattern;
             for (size_t i = 0; i < current_params.num_patterns; ++i)
             {
@@ -2675,91 +2690,94 @@ int search_string(const search_params_t *params, const char *text)
                     ptr += sprintf(ptr, "|");
                 }
             }
-            *ptr = '\0'; // Null terminate
+            *ptr = '\0';
             regex_to_compile = combined_regex_pattern;
         }
         else if (current_params.num_patterns == 1)
         {
-            regex_to_compile = current_params.patterns[0]; // Ensure correct pattern is used
+            regex_to_compile = current_params.patterns[0];
         }
         else
-        { // No patterns
-            match_result_free(matches);
-            return 1; // No patterns, no matches
+        {
+            // No patterns - shouldn't reach here due to earlier check
+            goto cleanup;
         }
 
+        // Compile the regex
         int rflags = REG_EXTENDED | REG_NEWLINE | (current_params.case_sensitive ? 0 : REG_ICASE);
         int ret = regcomp(&compiled_regex_local, regex_to_compile, rflags);
+
         if (ret != 0)
         {
             char ebuf[256];
             regerror(ret, &compiled_regex_local, ebuf, sizeof(ebuf));
             fprintf(stderr, "krep: Regex compilation error: %s\n", ebuf);
-            match_result_free(matches);
-            free(combined_regex_pattern);
-            return 2;
+            goto cleanup;
         }
-        // Create a mutable copy to assign the compiled regex pointer
-        search_params_t mutable_params = current_params;
-        mutable_params.compiled_regex = &compiled_regex_local;
-        current_params = mutable_params; // Update current_params
+
+        regex_compiled = true;
+        current_params.compiled_regex = &compiled_regex_local;
     }
+
+    // --- Execute Search ---
 
     // Select and run the appropriate search algorithm
     search_func_t search_algo = select_search_algorithm(&current_params);
-    // The function returns the count (lines or matches)
-    // and populates 'matches' if track_positions is true
+
+    // Perform search and collect results
     final_count = search_algo(&current_params, text, text_len, matches);
 
-    // Determine final result code based on matches found
-    bool match_found_bool = false;
+    // Determine final result based on matches found
+    bool match_found = false;
+
     if (current_params.count_lines_mode || current_params.count_matches_mode)
     {
-        match_found_bool = (final_count > 0);
+        match_found = (final_count > 0);
     }
     else
-    { // track_positions is true
-        match_found_bool = (matches && matches->count > 0);
-        if (match_found_bool)
-            final_count = matches->count; // Update final_count to number of positions found
+    {
+        match_found = (matches && matches->count > 0);
+        if (match_found)
+        {
+            final_count = matches->count;
+        }
     }
-    result_code = match_found_bool ? 0 : 1;
+
+    result_code = match_found ? 0 : 1;
 
     // --- Print Results ---
-    size_t items_printed_count KREP_UNUSED = 0; // Mark as unused with macro
 
-    if (current_params.count_lines_mode || current_params.count_matches_mode) // -c or -co
+    if (current_params.count_lines_mode || current_params.count_matches_mode)
     {
-        printf("%" PRIu64 "\n", final_count); // Print line or match count
+        printf("%" PRIu64 "\n", final_count);
     }
-    else // default or -o (track_positions was true)
+    else
     {
         // Print matches/lines if found
         if (result_code == 0 && matches)
         {
-            // No need to sort for string search (single thread, Aho-Corasick finds in order)
-            items_printed_count = print_matching_items(NULL, text, text_len, matches);
+            // No need to sort for string search (single thread)
+            print_matching_items(NULL, text, text_len, matches);
         }
-        // Handle case where match was found (result_code=0) but no positions recorded
-        // (e.g., empty regex match)
+        // Handle case where match was found but no positions recorded (e.g., empty regex match)
         else if (result_code == 0 && (!matches || matches->count == 0))
         {
-            if (only_matching) // -o (global flag)
+            if (only_matching)
             {
                 // Print empty match for -o (consistent with grep)
                 puts("");
             }
-            else // default
+            else
             {
-                // Print the whole (empty) line if the pattern matched it
+                // Print the whole (empty) line
                 puts("");
             }
-            items_printed_count = 1;
         }
     }
 
-    // Cleanup
-    if (current_params.use_regex && current_params.compiled_regex == &compiled_regex_local) // Check if we compiled locally
+cleanup:
+    // --- Cleanup ---
+    if (regex_compiled)
     {
         regfree(&compiled_regex_local);
     }
