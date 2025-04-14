@@ -69,6 +69,9 @@ typedef struct
    // Compiled regex (if applicable, compiled once per file/string)
    const regex_t *compiled_regex;
 
+   // Max count limit from options
+   size_t max_count;
+
 } search_params_t;
 
 // Data passed to each search thread
@@ -160,16 +163,18 @@ void match_result_free(match_result_t *result);
 bool match_result_merge(match_result_t *dest, const match_result_t *src, size_t chunk_offset);
 
 /**
- * @brief Print matching lines or only matched parts (-o). Handles highlighting and unique lines.
- * Assumes 'result' is sorted by start_offset if aggregated from multiple threads.
+ * @brief Prints matching lines or parts based on the provided results and parameters.
  *
- * @param filename Optional filename prefix. NULL if not needed.
- * @param text The original text buffer.
- * @param text_len Length of the text buffer.
- * @param result Pointer to the match_result_t structure containing positions.
- * @return The number of items printed (unique lines or matches).
+ * Handles color highlighting, line numbering, and the '-o' (only matching) option.
+ *
+ * @param filename The name of the file being searched (or NULL for stdin/string).
+ * @param text The full text content.
+ * @param text_len The length of the text content.
+ * @param result A pointer to the match_result_t structure containing match positions.
+ * @param params A pointer to the search parameters, including max_count.
+ * @return The number of items (lines or matches) printed.
  */
-size_t print_matching_items(const char *filename, const char *text, size_t text_len, const match_result_t *result);
+size_t print_matching_items(const char *filename, const char *text, size_t text_len, const match_result_t *result, const search_params_t *params);
 
 // Print usage information
 void print_usage(const char *program_name);

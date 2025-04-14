@@ -16,6 +16,7 @@
 - **Recursive directory search**: Skip binary files and common non-code directories
 - **Colored output**: Highlights matches for better readability
 - **Specialized algorithms**: Optimized handling for single-character and short patterns
+- **Match Limiting**: Stop searching a file after a specific number of matching lines are found.
 
 ## Installation
 
@@ -54,6 +55,7 @@ make ENABLE_ARCH_DETECTION=0
 ```bash
 krep [OPTIONS] PATTERN [FILE | DIRECTORY]
 krep [OPTIONS] -e PATTERN [FILE | DIRECTORY]
+krep [OPTIONS] -f FILE [FILE | DIRECTORY]
 krep [OPTIONS] -s PATTERN STRING_TO_SEARCH
 krep [OPTIONS] PATTERN < FILE
 cat FILE | krep [OPTIONS] PATTERN
@@ -74,6 +76,11 @@ krep -i "ERROR" large_logfile.log
 Count occurrences:
 ```bash
 krep -c "TODO" source.c
+```
+
+Limit output to the first 5 matching lines per file:
+```bash
+krep -m 5 "WARNING" /var/log/
 ```
 
 Use regular expressions:
@@ -98,19 +105,21 @@ cat krep.c | krep 'c'
 
 ## Command Line Options
 
-- `-i` Case-insensitive search
-- `-c` Count matching lines only
-- `-o` Print only the matched parts of lines
-- `-e PATTERN` Specify pattern (useful for patterns starting with '-')
-- `-E` Use POSIX Extended Regular Expressions
-- `-F` Interpret pattern as fixed string (not regex)
-- `-r` Recursively search directories
-- `-t NUM` Use NUM threads for file search
-- `-s` Search in string instead of file
+- `-i, --ignore-case` Case-insensitive search
+- `-c, --count` Count matching lines only
+- `-o, --only-matching` Print only the matched parts of lines
+- `-e PATTERN, --pattern=PATTERN` Specify pattern(s). Can be used multiple times.
+- `-f FILE, --file=FILE` Read patterns from FILE, one per line.
+- `-m NUM, --max-count=NUM` Stop searching each file after finding NUM matching lines.
+- `-E, --extended-regexp` Use POSIX Extended Regular Expressions
+- `-F, --fixed-strings` Interpret pattern as fixed string(s) (default unless -E is used)
+- `-r, --recursive` Recursively search directories
+- `-t NUM, --threads=NUM` Use NUM threads for file search (default: auto)
+- `-s STRING, --string=STRING` Search in the provided STRING instead of file(s)
 - `--color[=WHEN]` Control color output ('always', 'never', 'auto')
 - `--no-simd` Explicitly disable SIMD acceleration
-- `-v` Show version information
-- `-h` Show help message
+- `-v, --version` Show version information
+- `-h, --help` Show help message
 
 ## Performance Benchmarks
 

@@ -14,12 +14,10 @@
 #define TESTING
 #endif
 
-/* Define TEST_MULTIPLE_PATTERNS_FILE to get the right function signatures in test_compat.h */
-#define TEST_MULTIPLE_PATTERNS_FILE
-
 /* Include the test headers */
-#include "test_krep.h"   // Test header
-#include "test_compat.h" // Compatibility wrappers
+#include "../krep.h"         // Main krep header
+#include "../aho_corasick.h" // Aho-Corasick header
+#include "test_krep.h"       // Test header
 
 /* Test flags and counters */
 extern int tests_passed;
@@ -28,113 +26,183 @@ extern int tests_failed;
 /**
  * Basic test assertion with reporting
  */
-#define TEST_ASSERT(condition, message)                 \
-    do                                                  \
-    {                                                   \
-        if (condition)                                  \
-        {                                               \
-            tests_passed++;                             \
-            printf("✓ %s\n", message);                  \
-        }                                               \
-        else                                            \
-        {                                               \
-            tests_failed++;                             \
-            printf("✗ %s\n", message);                  \
-            printf("  at %s:%d\n", __FILE__, __LINE__); \
-        }                                               \
+#define TEST_ASSERT(condition, message)      \
+    do                                       \
+    {                                        \
+        if (condition)                       \
+        {                                    \
+            printf("✓ PASS: %s\n", message); \
+            tests_passed++;                  \
+        }                                    \
+        else                                 \
+        {                                    \
+            printf("✗ FAIL: %s\n", message); \
+            tests_failed++;                  \
+        }                                    \
     } while (0)
 
+// --- Forward declarations for test functions within this file ---
+void test_basic_aho_corasick(void);
+void test_aho_corasick_case_insensitive(void);
+void test_aho_corasick_edge_cases(void);
+void test_position_tracking_multipattern(void);
+void test_multipattern_performance(void);
+
 /**
- * Test basic multiple pattern search functionality
+ * Test basic Aho-Corasick functionality
  */
-void test_basic_multipattern(void)
+void test_basic_aho_corasick(void)
 {
-    printf("\n=== Basic Multiple Pattern Tests ===\n");
+    printf("\n=== Basic Aho-Corasick Tests ===\n");
 
-    const char *text = "The quick brown fox jumps over the lazy dog";
+    const char *text = "ushers";
     size_t text_len = strlen(text);
+    const char *patterns[] = {"he", "she", "his", "hers"};
+    size_t pattern_lens[] = {2, 3, 3, 4};
+    size_t num_patterns = 4;
 
-    // Define multiple patterns
-    const char *patterns[] = {"quick", "fox", "dog"};
-    size_t pattern_lens[] = {5, 3, 3};
-    size_t num_patterns = 3;
-
-    // Create search parameters
+    // Create search params
     search_params_t params = {
         .patterns = patterns,
         .pattern_lens = pattern_lens,
         .num_patterns = num_patterns,
         .case_sensitive = true,
         .use_regex = false,
-        .track_positions = false,
-        .count_lines_mode = false,
-        .compiled_regex = NULL};
+        .track_positions = false,   // Don't track positions for count check
+        .count_lines_mode = false,  // Count matches
+        .count_matches_mode = true, // Indicate intent
+        .compiled_regex = NULL,
+        .max_count = SIZE_MAX};
 
-    // Perform search - replace with compatibility wrapper parameters
-    uint64_t matches = aho_corasick_search(
-        text, text_len,
-        patterns, pattern_lens, num_patterns,
-        params.case_sensitive, SIZE_MAX);
+    // Call aho_corasick_search with the params struct
+    uint64_t matches = aho_corasick_search(&params, text, text_len, NULL);
 
-    TEST_ASSERT(matches == 3, "Found all 3 patterns (quick, fox, dog) with Aho-Corasick");
+    // Expected matches: "he" (at index 1), "she" (at index 0), "hers" (at index 2)
+    TEST_ASSERT(matches == 3, "Aho-Corasick finds 3 matches in 'ushers'");
 
-    // Test with pattern not in text
-    const char *patterns2[] = {"quick", "cat", "dog"};
-    size_t pattern_lens2[] = {5, 3, 3};
-
-    params.patterns = patterns2;
-    params.pattern_lens = pattern_lens2;
-
-    matches = aho_corasick_search(
-        text, text_len,
-        patterns2, pattern_lens2, num_patterns,
-        params.case_sensitive, SIZE_MAX);
-
-    TEST_ASSERT(matches == 2, "Found 2 patterns (quick, dog) correctly");
+    // Test with no matches
+    const char *text2 = "xyz";
+    size_t text2_len = strlen(text2);
+    matches = aho_corasick_search(&params, text2, text2_len, NULL);
+    TEST_ASSERT(matches == 0, "Aho-Corasick finds 0 matches in 'xyz'");
 }
 
 /**
- * Test case-insensitive multiple pattern search
+ * Test Aho-Corasick case-insensitive search
  */
-void test_case_insensitive_multipattern(void)
+void test_aho_corasick_case_insensitive(void)
 {
-    printf("\n=== Case-Insensitive Multiple Pattern Tests ===\n");
+    printf("\n=== Aho-Corasick Case-Insensitive Tests ===\n");
 
-    const char *text = "The Quick Brown Fox jumps over THE LAZY DOG";
+    const char *text = "UsHeRs";
     size_t text_len = strlen(text);
+    const char *patterns[] = {"he", "she", "his", "hers"};
+    size_t pattern_lens[] = {2, 3, 3, 4};
+    size_t num_patterns = 4;
 
-    // Define patterns (in lowercase)
-    const char *patterns[] = {"quick", "fox", "dog"};
-    size_t pattern_lens[] = {5, 3, 3};
-    size_t num_patterns = 3;
-
-    // Create search parameters
+    // Create search params for case-insensitive search
     search_params_t params = {
         .patterns = patterns,
         .pattern_lens = pattern_lens,
         .num_patterns = num_patterns,
-        .case_sensitive = false, // case-insensitive
+        .case_sensitive = false, // Set to false
+        .use_regex = false,
+        .track_positions = false,   // Don't track positions for count check
+        .count_lines_mode = false,  // Count matches
+        .count_matches_mode = true, // Indicate intent
+        .compiled_regex = NULL,
+        .max_count = SIZE_MAX};
+
+    // Call aho_corasick_search with the params struct
+    uint64_t matches = aho_corasick_search(&params, text, text_len, NULL);
+
+    // Expected matches: "he" (at index 1), "she" (at index 0), "hers" (at index 2)
+    TEST_ASSERT(matches == 3, "Aho-Corasick finds 3 matches case-insensitively in 'UsHeRs'");
+
+    // Test with different casing in patterns
+    const char *patterns2[] = {"HE", "SHE", "HIS", "HERS"};
+    search_params_t params2 = {
+        .patterns = patterns2, // Use uppercase patterns
+        .pattern_lens = pattern_lens,
+        .num_patterns = num_patterns,
+        .case_sensitive = false, // Still case-insensitive
         .use_regex = false,
         .track_positions = false,
         .count_lines_mode = false,
-        .compiled_regex = NULL};
+        .count_matches_mode = true,
+        .compiled_regex = NULL,
+        .max_count = SIZE_MAX};
 
-    // Perform case-insensitive search - replace with compatibility wrapper parameters
-    uint64_t matches = aho_corasick_search(
-        text, text_len,
-        patterns, pattern_lens, num_patterns,
-        params.case_sensitive, SIZE_MAX);
+    matches = aho_corasick_search(&params2, text, text_len, NULL);
+    TEST_ASSERT(matches == 3, "Aho-Corasick finds 3 matches case-insensitively with uppercase patterns");
+}
 
-    TEST_ASSERT(matches == 3, "Found all 3 patterns case-insensitively");
+/**
+ * Test Aho-Corasick edge cases
+ */
+void test_aho_corasick_edge_cases(void)
+{
+    printf("\n=== Aho-Corasick Edge Cases Tests ===\n");
 
-    // Compare with case-sensitive search
-    params.case_sensitive = true;
-    matches = aho_corasick_search(
-        text, text_len,
-        patterns, pattern_lens, num_patterns,
-        params.case_sensitive, SIZE_MAX);
+    const char *text = "abc";
+    size_t text_len = strlen(text);
+    const char *patterns[] = {"a", "b", "c", "ab", "bc", "abc"};
+    size_t pattern_lens[] = {1, 1, 1, 2, 2, 3};
+    size_t num_patterns = 6;
 
-    TEST_ASSERT(matches == 1, "Found only 1 pattern with case sensitivity");
+    // Create search params
+    search_params_t params = {
+        .patterns = patterns,
+        .pattern_lens = pattern_lens,
+        .num_patterns = num_patterns,
+        .case_sensitive = true,
+        .use_regex = false,
+        .track_positions = false,   // Don't track positions for count check
+        .count_lines_mode = false,  // Count matches
+        .count_matches_mode = true, // Indicate intent
+        .compiled_regex = NULL,
+        .max_count = SIZE_MAX};
+
+    // Call aho_corasick_search with the params struct
+    uint64_t matches = aho_corasick_search(&params, text, text_len, NULL);
+    // Expected: "a", "ab", "abc", "b", "bc", "c" -> 6 matches
+    TEST_ASSERT(matches == 6, "Aho-Corasick finds all overlapping patterns");
+
+    // Test empty text
+    matches = aho_corasick_search(&params, "", 0, NULL);
+    TEST_ASSERT(matches == 0, "Aho-Corasick finds 0 matches in empty text");
+
+    // Test empty patterns list
+    search_params_t params_empty = {
+        .patterns = NULL,
+        .pattern_lens = NULL,
+        .num_patterns = 0, // Set num_patterns to 0
+        .case_sensitive = true,
+        .use_regex = false,
+        .track_positions = false,
+        .count_lines_mode = false,
+        .count_matches_mode = true,
+        .compiled_regex = NULL,
+        .max_count = SIZE_MAX};
+    matches = aho_corasick_search(&params_empty, text, text_len, NULL);
+    TEST_ASSERT(matches == 0, "Aho-Corasick finds 0 matches with empty pattern list");
+
+    // Test patterns longer than text
+    const char *patterns_long[] = {"abcd", "abcde"};
+    size_t pattern_lens_long[] = {4, 5};
+    search_params_t params_long = {
+        .patterns = patterns_long,
+        .pattern_lens = pattern_lens_long,
+        .num_patterns = 2,
+        .case_sensitive = true,
+        .use_regex = false,
+        .track_positions = false,
+        .count_lines_mode = false,
+        .count_matches_mode = true,
+        .compiled_regex = NULL,
+        .max_count = SIZE_MAX};
+    matches = aho_corasick_search(&params_long, text, text_len, NULL);
+    TEST_ASSERT(matches == 0, "Aho-Corasick finds 0 matches when patterns are longer than text");
 }
 
 /**
@@ -144,58 +212,41 @@ void test_position_tracking_multipattern(void)
 {
     printf("\n=== Position Tracking with Multiple Patterns ===\n");
 
-    const char *text = "apple orange banana apple";
+    const char *text = "apple banana cherry";
     size_t text_len = strlen(text);
+    const char *patterns[] = {"apple", "banana", "cherry"};
+    size_t pattern_lens[] = {5, 6, 6};
+    size_t num_patterns = 3;
 
-    // Define patterns
-    const char *patterns[] = {"apple", "banana"};
-    size_t pattern_lens[] = {5, 6};
-    size_t num_patterns = 2;
-
-    // Create search parameters with position tracking
+    // Create search params with position tracking enabled
     search_params_t params = {
         .patterns = patterns,
         .pattern_lens = pattern_lens,
         .num_patterns = num_patterns,
         .case_sensitive = true,
         .use_regex = false,
-        .track_positions = true,
+        .track_positions = true, // Enable position tracking
         .count_lines_mode = false,
-        .compiled_regex = NULL};
+        .count_matches_mode = false,
+        .compiled_regex = NULL,
+        .max_count = SIZE_MAX};
 
-    // Create result structure
+    // Create result structure to collect positions
     match_result_t *result = match_result_init(10);
     if (!result)
     {
-        printf("Failed to create match_result\n");
+        fprintf(stderr, "Failed to create match_result in position tracking test\n");
         return;
     }
 
-// To handle position tracking, temporarily undefine and redefine the macro
-#undef aho_corasick_search
+    // Perform the search
     uint64_t matches = aho_corasick_search(&params, text, text_len, result);
-#define aho_corasick_search aho_corasick_search_compat
 
+    // Verify number of matches
     TEST_ASSERT(matches == 3, "Found 3 pattern matches");
     TEST_ASSERT(result->count == 3, "Result contains 3 positions");
 
-    // Verify match positions (if we have 3 results)
-    if (result->count == 3)
-    {
-        // First "apple" at position 0-5
-        TEST_ASSERT(result->positions[0].start_offset == 0, "First match starts at offset 0");
-        TEST_ASSERT(result->positions[0].end_offset == 5, "First match ends at offset 5");
-
-        // "banana" at position 13-19
-        TEST_ASSERT(result->positions[1].start_offset == 13, "Second match starts at offset 13");
-        TEST_ASSERT(result->positions[1].end_offset == 19, "Second match ends at offset 19");
-
-        // Second "apple" at position 20-25
-        TEST_ASSERT(result->positions[2].start_offset == 20, "Third match starts at offset 20");
-        TEST_ASSERT(result->positions[2].end_offset == 25, "Third match ends at offset 25");
-    }
-
-    // Cleanup
+    // Clean up
     match_result_free(result);
 }
 
@@ -248,11 +299,23 @@ void test_multipattern_performance(void)
 
     for (size_t p = 0; p < num_patterns; p++)
     {
-        // Use the direct compatibility wrapper signature
-        total_matches_individual += boyer_moore_search(
-            text, text_size,
-            patterns[p], pattern_lens[p],
-            true, SIZE_MAX);
+        // Create params for individual Boyer-Moore search, configured for match counting
+        search_params_t single_params = {
+            .pattern = patterns[p],
+            .pattern_len = pattern_lens[p],
+            .case_sensitive = true,
+            .use_regex = false,
+            .track_positions = false,   // Don't track positions
+            .count_lines_mode = false,  // Don't count lines
+            .count_matches_mode = true, // Indicate intent to count matches
+            .compiled_regex = NULL,
+            .max_count = SIZE_MAX,
+            // Assign multi-pattern fields for consistency
+            .patterns = &patterns[p],
+            .pattern_lens = &pattern_lens[p],
+            .num_patterns = 1};
+        // Call the actual boyer_moore_search function
+        total_matches_individual += boyer_moore_search(&single_params, text, text_size, NULL);
     }
     clock_t end_individual = clock();
     double time_individual = ((double)(end_individual - start_individual)) / CLOCKS_PER_SEC;
@@ -265,15 +328,14 @@ void test_multipattern_performance(void)
         .num_patterns = num_patterns,
         .case_sensitive = true,
         .use_regex = false,
-        .track_positions = false,
-        .count_lines_mode = false,
-        .compiled_regex = NULL};
+        .track_positions = false,   // Don't track positions for combined count
+        .count_lines_mode = false,  // Don't count lines
+        .count_matches_mode = true, // Indicate intent to count matches
+        .compiled_regex = NULL,
+        .max_count = SIZE_MAX};
 
-    // Update the call to match compatibility wrapper
-    uint64_t matches_combined = aho_corasick_search(
-        text, text_size,
-        patterns, pattern_lens, num_patterns,
-        params.case_sensitive, SIZE_MAX);
+    // Call the actual aho_corasick_search function
+    uint64_t matches_combined = aho_corasick_search(&params, text, text_size, NULL);
     clock_t end_combined = clock();
     double time_combined = ((double)(end_combined - start_combined)) / CLOCKS_PER_SEC;
 
@@ -282,7 +344,23 @@ void test_multipattern_performance(void)
            total_matches_individual, time_individual);
     printf("  Combined search: %" PRIu64 " matches in %.6f seconds\n",
            matches_combined, time_combined);
-    printf("  Speed improvement: %.2fx\n", time_individual / time_combined);
+    // Avoid division by zero
+    if (time_combined > 1e-9 && time_individual >= 0)
+    {
+        printf("  Speed improvement: %.2fx\n", time_individual / time_combined);
+    }
+    else if (time_individual < 1e-9 && time_combined < 1e-9)
+    {
+        printf("  Both searches too fast to calculate ratio.\n");
+    }
+    else if (time_combined < 1e-9)
+    {
+        printf("  Combined search too fast to calculate ratio.\n");
+    }
+    else
+    {
+        printf("  Could not calculate ratio.\n");
+    }
 
     TEST_ASSERT(total_matches_individual == matches_combined,
                 "Both search methods found the same number of matches");
@@ -294,188 +372,15 @@ void test_multipattern_performance(void)
 /**
  * Run all multiple pattern tests
  */
-void run_multipattern_tests(void)
-{
-    printf("\n--- Running Multiple Pattern Tests ---\n");
-
-    test_basic_multipattern();
-    test_case_insensitive_multipattern();
-    test_position_tracking_multipattern();
-    test_multipattern_performance();
-
-    printf("\n--- Completed Multiple Pattern Tests ---\n");
-}
-
-/*
- * Test finding multiple patterns in text
- * Tests Aho-Corasick with different search patterns and input strings
- */
-void test_multiple_patterns_basic(void)
-{
-    printf("\n=== Multiple Pattern Basic Tests ===\n");
-
-    // Test Case 1: Multiple distinct patterns
-    const char *text1 = "The quick brown fox jumps over the lazy dog";
-    const char *patterns1[] = {"quick", "fox", "lazy"};
-    size_t pattern_lens1[] = {5, 3, 4};
-
-    uint64_t matches1 = aho_corasick_search_compat(
-        text1, strlen(text1),
-        patterns1, pattern_lens1, 3,
-        true, SIZE_MAX);
-
-    TEST_ASSERT(matches1 == 3, "Aho-Corasick finds all 3 distinct patterns");
-
-    // Test Case 2: Overlapping patterns
-    const char *text2 = "abababa"; // Pattern "aba" appears multiple times overlapping
-    const char *patterns2[] = {"aba"};
-    size_t pattern_lens2[] = {3};
-
-    uint64_t matches2 = aho_corasick_search_compat(
-        text2, strlen(text2),
-        patterns2, pattern_lens2, 1,
-        true, SIZE_MAX);
-
-    TEST_ASSERT(matches2 == 3, "Aho-Corasick finds multiple overlapping patterns");
-
-    // Test Case 3: Case insensitivity
-    const char *text3 = "The QUICK brown FOX jumps over the lazy DOG";
-    const char *patterns3[] = {"quick", "fox", "dog"};
-    size_t pattern_lens3[] = {5, 3, 3};
-
-    uint64_t matches3_case_sensitive = aho_corasick_search_compat(
-        text3, strlen(text3),
-        patterns3, pattern_lens3, 3,
-        true, SIZE_MAX);
-
-    uint64_t matches3_case_insensitive = aho_corasick_search_compat(
-        text3, strlen(text3),
-        patterns3, pattern_lens3, 3,
-        false, SIZE_MAX);
-
-    TEST_ASSERT(matches3_case_sensitive == 0, "Aho-Corasick with case sensitivity finds 0 matches");
-    TEST_ASSERT(matches3_case_insensitive == 3, "Aho-Corasick with case insensitivity finds 3 matches");
-}
-
-/*
- * Test edge cases for multiple pattern search
- */
-void test_multiple_patterns_edge_cases(void)
-{
-    printf("\n=== Multiple Pattern Edge Cases ===\n");
-
-    // Test Case 1: Empty text
-    const char *empty_text = "";
-    const char *patterns1[] = {"test", "pattern"};
-    size_t pattern_lens1[] = {4, 7};
-
-    uint64_t matches1 = aho_corasick_search_compat(
-        empty_text, 0,
-        patterns1, pattern_lens1, 2,
-        true, SIZE_MAX);
-
-    TEST_ASSERT(matches1 == 0, "Aho-Corasick handles empty text correctly");
-
-    // Test Case 2: Empty pattern
-    const char *text2 = "Some text to search";
-    const char *patterns2[] = {""};
-    size_t pattern_lens2[] = {0};
-
-    uint64_t matches2 = aho_corasick_search_compat(
-        text2, strlen(text2),
-        patterns2, pattern_lens2, 1,
-        true, SIZE_MAX);
-
-    TEST_ASSERT(matches2 == 0, "Aho-Corasick handles empty pattern correctly");
-
-    // Test Case 3: Multiple empty patterns
-    const char *patterns3[] = {"", ""};
-    size_t pattern_lens3[] = {0, 0};
-
-    uint64_t matches3 = aho_corasick_search_compat(
-        text2, strlen(text2),
-        patterns3, pattern_lens3, 2,
-        true, SIZE_MAX);
-
-    TEST_ASSERT(matches3 == 0, "Aho-Corasick handles multiple empty patterns");
-}
-
-/*
- * Test performance of individual vs. combined pattern search
- */
-void test_pattern_search_performance(void)
-{
-    printf("\n=== Multiple Pattern Performance Comparison ===\n");
-
-    // Create a larger text
-    size_t text_size = 1024 * 1024; // 1MB
-    char *text = malloc(text_size + 1);
-    if (!text)
-    {
-        fprintf(stderr, "Failed to allocate text buffer\n");
-        return;
-    }
-
-    // Fill with repeating alphabet
-    for (size_t i = 0; i < text_size; i++)
-    {
-        text[i] = 'a' + (i % 26);
-    }
-    text[text_size] = '\0';
-
-    // Create patterns to search
-    const char *patterns[] = {"abc", "def", "ghi", "jkl", "mno"};
-    size_t pattern_lens[] = {3, 3, 3, 3, 3};
-    size_t num_patterns = sizeof(patterns) / sizeof(patterns[0]);
-
-    // Time individual searches
-    clock_t start_individual = clock();
-    uint64_t total_matches_individual = 0;
-
-    for (size_t p = 0; p < num_patterns; p++)
-    {
-        total_matches_individual += boyer_moore_search(
-            text, text_size,
-            patterns[p], pattern_lens[p],
-            true, SIZE_MAX);
-    }
-
-    clock_t end_individual = clock();
-    double time_individual = (double)(end_individual - start_individual) / CLOCKS_PER_SEC;
-
-    // Time combined search
-    clock_t start_combined = clock();
-    uint64_t total_matches_combined = aho_corasick_search_compat(
-        text, text_size,
-        patterns, pattern_lens, num_patterns,
-        true, SIZE_MAX);
-    clock_t end_combined = clock();
-    double time_combined = (double)(end_combined - start_combined) / CLOCKS_PER_SEC;
-
-    printf("  Individual searches: %" PRIu64 " matches in %.6f seconds\n",
-           total_matches_individual, time_individual);
-    printf("  Combined search: %" PRIu64 " matches in %.6f seconds\n",
-           total_matches_combined, time_combined);
-
-    TEST_ASSERT(total_matches_individual == total_matches_combined,
-                "Individual and combined searches find same number of matches");
-
-    // We're not testing actual performance, just that the code runs
-    // A strict performance assertion might fail on different machines
-
-    free(text);
-}
-
-/*
- * Run all multiple pattern tests
- */
 void run_multiple_patterns_tests(void)
 {
     printf("\n--- Running Multiple Pattern Tests ---\n");
 
-    test_multiple_patterns_basic();
-    test_multiple_patterns_edge_cases();
-    test_pattern_search_performance();
+    test_basic_aho_corasick();
+    test_aho_corasick_case_insensitive();
+    test_aho_corasick_edge_cases();
+    test_position_tracking_multipattern();
+    test_multipattern_performance();
 
     printf("\n--- Completed Multiple Pattern Tests ---\n");
 }

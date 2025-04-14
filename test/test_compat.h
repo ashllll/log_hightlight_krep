@@ -71,20 +71,26 @@ static inline uint64_t kmp_search_compat(
 static inline uint64_t regex_search_compat(
     const char *text, size_t text_len,
     const regex_t *compiled_regex,
-    size_t report_limit_offset)
+    size_t report_limit_offset KREP_UNUSED) // Mark as unused, test refactored
 {
-    // Apply report_limit_offset by limiting the text length if needed
-    size_t effective_len = (report_limit_offset < text_len) ? report_limit_offset : text_len;
+    size_t effective_len = text_len; // Use full length
 
     // Create a search_params_t structure with the required parameters
     search_params_t params = {
         .pattern = NULL, // Not used for regex
         .pattern_len = 0,
-        .case_sensitive = false,
+        .case_sensitive = false, // Note: Case sensitivity is part of compiled_regex flags
         .use_regex = true,
-        .track_positions = false,
-        .count_lines_mode = false,
-        .compiled_regex = compiled_regex};
+        .track_positions = false,   // Compatibility wrapper doesn't track positions
+        .count_lines_mode = false,  // Compatibility wrapper counts matches by default
+        .count_matches_mode = true, // Explicitly set for clarity
+        .compiled_regex = compiled_regex,
+        .max_count = SIZE_MAX // Default: no limit for compat wrapper
+    };
+    // Assign multi-pattern fields (even for single regex)
+    params.patterns = NULL; // No specific pattern string needed here
+    params.pattern_lens = NULL;
+    params.num_patterns = 1; // Assume one regex pattern
 
     // Call the new function signature with the adjusted text length
     return regex_search(&params, text, effective_len, NULL);
@@ -171,8 +177,8 @@ static inline uint64_t aho_corasick_search_compat(
     const char **patterns, size_t *pattern_lens, size_t num_patterns,
     bool case_sensitive, size_t report_limit_offset)
 {
-    // Apply report_limit_offset by limiting the text length if needed
-    size_t effective_len = (report_limit_offset < text_len) ? report_limit_offset : text_len;
+    size_t effective_len = text_len; // Use full length
+    (void)report_limit_offset;       // Mark as unused
 
     // Create a search_params_t structure for multiple patterns
     search_params_t params = {
@@ -183,9 +189,11 @@ static inline uint64_t aho_corasick_search_compat(
         .num_patterns = num_patterns,
         .case_sensitive = case_sensitive,
         .use_regex = false,
-        .track_positions = false,
+        .track_positions = false, // Compatibility wrapper doesn't track positions
         .count_lines_mode = false,
-        .compiled_regex = NULL};
+        .compiled_regex = NULL,
+        .max_count = SIZE_MAX // Default: no limit for compat wrapper
+    };
 
     // Call the new function signature
     return aho_corasick_search(&params, text, effective_len, NULL);
@@ -224,16 +232,8 @@ static inline uint64_t test_bridge_boyer_moore(
     const char *text, size_t text_len,
     match_result_t *result)
 {
-    (void)result; // Suppress unused parameter warning
-
-    // Extract the parameters we need from the params struct
-    const char *pattern = params->pattern;
-    size_t pattern_len = params->pattern_len;
-    bool case_sensitive = params->case_sensitive;
-
-    // Call the compatibility wrapper with SIZE_MAX for report_limit_offset
-    return boyer_moore_search_compat(text, text_len, pattern, pattern_len,
-                                     case_sensitive, SIZE_MAX);
+    // Call the actual function, passing the max_count from params
+    return boyer_moore_search(params, text, text_len, result);
 }
 
 static inline uint64_t test_bridge_kmp(
@@ -241,16 +241,8 @@ static inline uint64_t test_bridge_kmp(
     const char *text, size_t text_len,
     match_result_t *result)
 {
-    (void)result; // Suppress unused parameter warning
-
-    // Extract the parameters we need from the params struct
-    const char *pattern = params->pattern;
-    size_t pattern_len = params->pattern_len;
-    bool case_sensitive = params->case_sensitive;
-
-    // Call the compatibility wrapper with SIZE_MAX for report_limit_offset
-    return kmp_search_compat(text, text_len, pattern, pattern_len,
-                             case_sensitive, SIZE_MAX);
+    // Call the actual function, passing the max_count from params
+    return kmp_search(params, text, text_len, result);
 }
 
 /* Bridge function for regex_search with params struct */
@@ -259,60 +251,9 @@ static inline uint64_t test_bridge_regex(
     const char *text, size_t text_len,
     match_result_t *result)
 {
-    (void)result; // Suppress unused parameter warning
-
-    // Extract the regex from the params struct
-    const regex_t *compiled_regex = params->compiled_regex;
-    if (!compiled_regex)
-    {
-        // If no regex compiled, return 0
-        return 0;
-    }
-
-    // Call the compatibility wrapper with SIZE_MAX for report_limit_offset
-    return regex_search_compat(text, text_len, compiled_regex, SIZE_MAX);
+    // Call the actual function, passing the max_count from params
+    return regex_search(params, text, text_len, result);
 }
-
-/*
- * Conditional compilation based on which test file is using this header.
- * Define TEST_MULTIPLE_PATTERNS when compiling test_multiple_patterns.c
- * to get the old style function signatures.
- */
-
-// Check if we're compiling test_multiple_patterns.c (identified by unique string)
-#if defined(TEST_MULTIPLE_PATTERNS_FILE)
-// For test_multiple_patterns.c - use original compatibility style (direct arguments)
-#define boyer_moore_search boyer_moore_search_compat
-#define kmp_search kmp_search_compat
-#define regex_search regex_search_compat
-#define aho_corasick_search aho_corasick_search_compat
-#define memchr_short_search memchr_short_search_compat
-#ifdef __SSE4_2__
-#define simd_sse42_search simd_sse42_search_compat
-#endif
-#ifdef __AVX2__
-#define simd_avx2_search simd_avx2_search_compat
-#endif
-#ifdef __ARM_NEON
-#define neon_search neon_search_compat
-#endif
-#else
-// For test_krep.c and other tests - use bridge functions that work with struct params
-#define boyer_moore_search test_bridge_boyer_moore
-#define kmp_search test_bridge_kmp
-#define regex_search test_bridge_regex
-#define aho_corasick_search aho_corasick_search_compat // No bridge function for this yet
-#define memchr_short_search memchr_short_search_compat // No bridge function for this yet
-#ifdef __SSE4_2__
-#define simd_sse42_search simd_sse42_search_compat
-#endif
-#ifdef __AVX2__
-#define simd_avx2_search simd_avx2_search_compat
-#endif
-#ifdef __ARM_NEON
-#define neon_search neon_search_compat
-#endif
-#endif
 
 #endif /* TESTING */
 

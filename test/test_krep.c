@@ -67,7 +67,7 @@ search_params_t create_literal_params(const char *pattern, bool case_sensitive, 
         perror("Failed to allocate memory for single pattern params");
         exit(EXIT_FAILURE);
     }
-    params.patterns[0] = pattern;
+    params.patterns[0] = (char *)pattern; // Cast needed as patterns is const char**
     params.pattern_lens[0] = strlen(pattern);
     params.num_patterns = 1;
     params.case_sensitive = case_sensitive;
@@ -76,6 +76,7 @@ search_params_t create_literal_params(const char *pattern, bool case_sensitive, 
     params.count_matches_mode = count_lines && only_match; // Not directly used, but set for clarity
     params.track_positions = !(count_lines && !only_match);
     params.compiled_regex = NULL;
+    params.max_count = SIZE_MAX; // Default: no limit
 
     // Set legacy fields for compatibility with older test functions if needed
     params.pattern = params.patterns[0];
@@ -95,7 +96,7 @@ search_params_t create_regex_params(const char *pattern, bool case_sensitive, bo
         perror("Failed to allocate memory for single regex params");
         exit(EXIT_FAILURE);
     }
-    params.patterns[0] = pattern;
+    params.patterns[0] = (char *)pattern;     // Cast needed
     params.pattern_lens[0] = strlen(pattern); // Store length even for regex
     params.num_patterns = 1;
     params.case_sensitive = case_sensitive;
@@ -103,6 +104,7 @@ search_params_t create_regex_params(const char *pattern, bool case_sensitive, bo
     params.count_lines_mode = count_lines && !only_match;
     params.count_matches_mode = count_lines && only_match;
     params.track_positions = !(count_lines && !only_match);
+    params.max_count = SIZE_MAX; // Default: no limit
 
     // Compile the regex (allocate locally for the test)
     regex_t *compiled_regex = malloc(sizeof(regex_t));
@@ -481,7 +483,6 @@ void test_simd_specific_new(void)
     matches_simd = simd_sse42_search(&params1, haystack, haystack_len, result);
     matches_bmh = test_bridge_boyer_moore(&params1, haystack, haystack_len, result);
     TEST_ASSERT(matches_simd == matches_bmh, "SSE4.2 and Boyer-Moore match for 5-byte pattern");
-    // --- CORRECTED ASSERTION ---
     TEST_ASSERT(matches_simd == 2, "SSE4.2 finds 'dolor' twice");
     cleanup_params(&params1);
 
@@ -525,17 +526,14 @@ void test_simd_specific_new(void)
     matches_bmh = test_bridge_boyer_moore(&params_ci, haystack, haystack_len, result);
     TEST_ASSERT(matches_simd == matches_bmh,
                 "Case-insensitive search consistent between SSE4.2 fallback and Boyer-Moore");
-    // --- CORRECTED ASSERTION ---
     TEST_ASSERT(matches_simd == 2, "Case-insensitive SSE4.2 fallback finds 'DOLOR' twice");
     cleanup_params(&params_ci);
 #else
     printf("INFO: SSE4.2 not available, skipping SSE4.2 specific tests.\n");
 #endif // KREP_USE_SSE42
 
-// Add similar blocks for AVX2 and NEON if needed, adjusting pattern lengths and expectations
 #if KREP_USE_AVX2
     printf("--- Testing AVX2 ---\n");
-    // AVX2 handles up to 32 bytes, and has case-insensitive logic
     const char *pattern_long = "sed do eiusmod tempor incididunt"; // 29 bytes
     const char *pattern_long_upper = "SED DO EIUSMOD TEMPOR INCIDIDUNT";
 
@@ -567,8 +565,6 @@ void test_simd_specific_new(void)
 
 #if KREP_USE_NEON
     printf("--- Testing NEON ---\n");
-    // NEON handles up to 16 bytes, case-sensitive only in current impl
-    // Test pattern (5 bytes)
     search_params_t params_neon1 = create_literal_params(pattern1, true, false, false);
     matches_simd = neon_search(&params_neon1, haystack, haystack_len, result);
     matches_bmh = test_bridge_boyer_moore(&params_neon1, haystack, haystack_len, result);
@@ -576,7 +572,6 @@ void test_simd_specific_new(void)
     TEST_ASSERT(matches_simd == 2, "NEON finds 'dolor' twice");
     cleanup_params(&params_neon1);
 
-    // Test pattern (16 bytes)
     search_params_t params_neon16 = create_literal_params(pattern16, true, false, false);
     matches_simd = neon_search(&params_neon16, haystack, haystack_len, result);
     matches_bmh = test_bridge_boyer_moore(&params_neon16, haystack, haystack_len, result);
@@ -584,7 +579,6 @@ void test_simd_specific_new(void)
     TEST_ASSERT(matches_simd == 1, "NEON finds 'consectetur adip' once");
     cleanup_params(&params_neon16);
 
-    // Test pattern > 16 bytes (should fallback)
     search_params_t params_neon17 = create_literal_params(pattern17, true, false, false);
     matches_simd = neon_search(&params_neon17, haystack, haystack_len, result); // Falls back to BM
     matches_bmh = test_bridge_boyer_moore(&params_neon17, haystack, haystack_len, result);
@@ -592,7 +586,6 @@ void test_simd_specific_new(void)
     TEST_ASSERT(matches_simd == 1, "NEON fallback finds 'consectetur adipi' once");
     cleanup_params(&params_neon17);
 
-    // Test case-insensitive (should fallback)
     search_params_t params_neon_ci = create_literal_params("DOLOR", false, false, false);
     matches_simd = neon_search(&params_neon_ci, haystack, haystack_len, result); // Falls back to BM
     matches_bmh = test_bridge_boyer_moore(&params_neon_ci, haystack, haystack_len, result);
@@ -658,6 +651,174 @@ void test_report_limit_new(void)
 #endif
 
     cleanup_params(&params);
+}
+
+/**
+ * Test max_count functionality (-m option)
+ */
+void test_max_count_new(void)
+{
+    printf("\n=== Max Count (-m) Tests ===\n");
+
+    const char *text = "line1: match\nline2: no\nline3: match\nline4: match\nline5: no\nline6: match";
+    size_t text_len = strlen(text);
+    match_result_t *result = NULL; // Used for position tracking tests
+
+    // --- Literal Search ---
+    printf("--- Literal Search ---\n");
+    search_params_t params_lit = create_literal_params("match", true, false, false);
+
+    params_lit.max_count = 2;
+    result = match_result_init(10);
+    TEST_ASSERT(boyer_moore_search(&params_lit, text, text_len, result) == 2, "BM literal finds 2 matches with limit 2");
+    TEST_ASSERT(result->count == 2, "BM literal result has 2 positions with limit 2");
+    match_result_free(result);
+    result = NULL;
+
+    params_lit.max_count = 4;
+    result = match_result_init(10);
+    TEST_ASSERT(boyer_moore_search(&params_lit, text, text_len, result) == 4, "BM literal finds 4 matches with limit 4");
+    TEST_ASSERT(result->count == 4, "BM literal result has 4 positions with limit 4");
+    match_result_free(result);
+    result = NULL;
+
+    params_lit.max_count = 5;
+    result = match_result_init(10);
+    TEST_ASSERT(boyer_moore_search(&params_lit, text, text_len, result) == 4, "BM literal finds 4 matches with limit 5");
+    TEST_ASSERT(result->count == 4, "BM literal result has 4 positions with limit 5");
+    match_result_free(result);
+    result = NULL;
+
+    params_lit.max_count = 1;
+    result = match_result_init(10);
+    TEST_ASSERT(boyer_moore_search(&params_lit, text, text_len, result) == 1, "BM literal finds 1 match with limit 1");
+    TEST_ASSERT(result->count == 1, "BM literal result has 1 position with limit 1");
+    match_result_free(result);
+    result = NULL;
+
+    params_lit.max_count = 0;
+    result = match_result_init(10);
+    TEST_ASSERT(boyer_moore_search(&params_lit, text, text_len, result) == 0, "BM literal finds 0 matches with limit 0");
+    TEST_ASSERT(result->count == 0, "BM literal result has 0 positions with limit 0");
+    match_result_free(result);
+    result = NULL;
+
+    cleanup_params(&params_lit);
+
+    // --- Literal Search with -c (Count Lines) ---
+    printf("--- Literal Search (-c) ---\n");
+    search_params_t params_lit_c = create_literal_params("match", true, true, false); // count_lines=true
+
+    params_lit_c.max_count = 2;
+    TEST_ASSERT(boyer_moore_search(&params_lit_c, text, text_len, NULL) == 2, "BM literal -c finds 2 lines with limit 2");
+
+    params_lit_c.max_count = 4;
+    TEST_ASSERT(boyer_moore_search(&params_lit_c, text, text_len, NULL) == 4, "BM literal -c finds 4 lines with limit 4");
+
+    params_lit_c.max_count = 5;
+    TEST_ASSERT(boyer_moore_search(&params_lit_c, text, text_len, NULL) == 4, "BM literal -c finds 4 lines with limit 5");
+
+    params_lit_c.max_count = 1;
+    TEST_ASSERT(boyer_moore_search(&params_lit_c, text, text_len, NULL) == 1, "BM literal -c finds 1 line with limit 1");
+
+    params_lit_c.max_count = 0;
+    TEST_ASSERT(boyer_moore_search(&params_lit_c, text, text_len, NULL) == 0, "BM literal -c finds 0 lines with limit 0");
+
+    cleanup_params(&params_lit_c);
+
+    // --- Literal Search with -o (Only Matching) ---
+    printf("--- Literal Search (-o) ---\n");
+    search_params_t params_lit_o = create_literal_params("match", true, false, true); // only_match=true
+
+    params_lit_o.max_count = 2;
+    result = match_result_init(10);
+    TEST_ASSERT(boyer_moore_search(&params_lit_o, text, text_len, result) == 2, "BM literal -o finds 2 matches with limit 2");
+    TEST_ASSERT(result->count == 2, "BM literal -o result has 2 positions with limit 2");
+    match_result_free(result);
+    result = NULL;
+
+    params_lit_o.max_count = 4;
+    result = match_result_init(10);
+    TEST_ASSERT(boyer_moore_search(&params_lit_o, text, text_len, result) == 4, "BM literal -o finds 4 matches with limit 4");
+    TEST_ASSERT(result->count == 4, "BM literal -o result has 4 positions with limit 4");
+    match_result_free(result);
+    result = NULL;
+
+    cleanup_params(&params_lit_o);
+
+    // --- Regex Search ---
+    printf("--- Regex Search ---\n");
+    search_params_t params_re = create_regex_params("^line[0-9]+: match", true, false, false);
+
+    params_re.max_count = 2;
+    result = match_result_init(10);
+    TEST_ASSERT(regex_search(&params_re, text, text_len, result) == 2, "Regex finds 2 matches with limit 2");
+    TEST_ASSERT(result->count == 2, "Regex result has 2 positions with limit 2");
+    match_result_free(result);
+    result = NULL;
+
+    params_re.max_count = 4;
+    result = match_result_init(10);
+    TEST_ASSERT(regex_search(&params_re, text, text_len, result) == 4, "Regex finds 4 matches with limit 4");
+    TEST_ASSERT(result->count == 4, "Regex result has 4 positions with limit 4");
+    match_result_free(result);
+    result = NULL;
+
+    cleanup_params(&params_re);
+
+    // --- Regex Search with -c (Count Lines) ---
+    printf("--- Regex Search (-c) ---\n");
+    search_params_t params_re_c = create_regex_params("^line[0-9]+: match", true, true, false); // count_lines=true
+
+    params_re_c.max_count = 2;
+    TEST_ASSERT(regex_search(&params_re_c, text, text_len, NULL) == 2, "Regex -c finds 2 lines with limit 2");
+
+    params_re_c.max_count = 4;
+    TEST_ASSERT(regex_search(&params_re_c, text, text_len, NULL) == 4, "Regex -c finds 4 lines with limit 4");
+
+    cleanup_params(&params_re_c);
+
+    // --- Aho-Corasick Search (Multiple Patterns) ---
+    printf("--- Aho-Corasick Search ---\n");
+    const char *ac_text = "apple banana apple orange apple grape apple";
+    size_t ac_text_len = strlen(ac_text);
+    const char *ac_patterns[] = {"apple", "orange"};
+    size_t ac_pattern_lens[] = {5, 6};
+    search_params_t params_ac = {
+        .patterns = ac_patterns,
+        .pattern_lens = ac_pattern_lens,
+        .num_patterns = 2,
+        .case_sensitive = true,
+        .use_regex = false,
+        .track_positions = true, // Need positions to verify count
+        .count_lines_mode = false,
+        .count_matches_mode = false,
+        .compiled_regex = NULL,
+        .max_count = SIZE_MAX // Default
+    };
+
+    params_ac.max_count = 3;
+    result = match_result_init(10);
+    TEST_ASSERT(aho_corasick_search(&params_ac, ac_text, ac_text_len, result) == 3, "Aho-Corasick finds 3 matches with limit 3");
+    TEST_ASSERT(result->count == 3, "Aho-Corasick result has 3 positions with limit 3");
+    match_result_free(result);
+    result = NULL;
+
+    params_ac.max_count = 5; // Total matches are 4 'apple' + 1 'orange' = 5
+    result = match_result_init(10);
+    TEST_ASSERT(aho_corasick_search(&params_ac, ac_text, ac_text_len, result) == 5, "Aho-Corasick finds 5 matches with limit 5");
+    TEST_ASSERT(result->count == 5, "Aho-Corasick result has 5 positions with limit 5");
+    match_result_free(result);
+    result = NULL;
+
+    params_ac.max_count = 6;
+    result = match_result_init(10);
+    TEST_ASSERT(aho_corasick_search(&params_ac, ac_text, ac_text_len, result) == 5, "Aho-Corasick finds 5 matches with limit 6");
+    TEST_ASSERT(result->count == 5, "Aho-Corasick result has 5 positions with limit 6");
+    match_result_free(result);
+    result = NULL;
+
+    // No cleanup_params needed for stack-allocated params_ac
 }
 
 /**
@@ -733,6 +894,7 @@ int main(void)
     printf("\nINFO: No SIMD available, skipping SIMD specific tests.\n");
 #endif
     test_report_limit_new();
+    test_max_count_new(); // Add call to the new test function
     test_multithreading_placeholder_new();
 
     // Run tests from other files
@@ -747,24 +909,3 @@ int main(void)
     // Return 0 if all tests passed, 1 otherwise
     return (tests_failed == 0) ? 0 : 1;
 }
-
-// --- Compatibility Wrappers ---
-// These functions adapt the old test function signatures to the new search_params_t structure.
-// They are defined in test_compat.c but declared here via test_compat.h.
-// If test_compat.c is not used, these could be defined directly here.
-
-// Example of how a wrapper might look (implementation in test_compat.c)
-/*
-uint64_t boyer_moore_search_compat(const char *text, size_t text_len,
-                                   const char *pattern, size_t pattern_len,
-                                   bool case_sensitive, size_t report_limit) {
-    search_params_t params = create_literal_params(pattern, case_sensitive, false, false);
-    // Note: report_limit is not directly supported by the new search functions.
-    // We pass the relevant text_len based on the limit.
-    size_t effective_len = (report_limit < text_len) ? report_limit : text_len;
-    uint64_t count = boyer_moore_search(&params, text, effective_len, NULL);
-    cleanup_params(&params);
-    return count;
-}
-// Similar wrappers for kmp_search, simd_sse42_search, regex_search...
-*/

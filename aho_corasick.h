@@ -1,41 +1,45 @@
-/* aho_corasick.h - Header for memory-optimized implementation of Aho-Corasick algorithm
- *
- * This file declares the interface for the Aho-Corasick string matching algorithm
- * used in krep for efficient multiple pattern searching.
+/**
+ * Aho-Corasick algorithm for multiple pattern search.
+ * This header declares the Aho-Corasick trie structure and functions.
  */
 
-#ifndef KREP_AHO_CORASICK_H
-#define KREP_AHO_CORASICK_H
+#ifndef AHO_CORASICK_H
+#define AHO_CORASICK_H
 
-#include <stdint.h>  // For uint64_t
-#include <stddef.h>  // For size_t
-#include <stdbool.h> // For bool
-#include "krep.h"    // For search_params_t and match_result_t
+#include "krep.h" // Include main header for search_params_t and other types
 
-#ifdef __cplusplus
-extern "C"
-{
-#endif
+/**
+ * Aho-Corasick trie structure (opaque type)
+ */
+typedef struct ac_trie ac_trie_t;
 
-    /**
-     * @brief Search for multiple patterns in text using the Aho-Corasick algorithm
-     *
-     * This function builds an Aho-Corasick automaton from the patterns provided in params
-     * and then searches the text for all occurrences of these patterns.
-     *
-     * @param params Search parameters including patterns and options
-     * @param text_start Pointer to the start of the text to search
-     * @param text_len Length of the text to search
-     * @param result Optional pointer to match_result_t structure to store match positions
-     * @return Number of matches found
-     */
-    uint64_t aho_corasick_search(const search_params_t *params,
-                                 const char *text_start,
-                                 size_t text_len,
-                                 match_result_t *result);
+/**
+ * Build an Aho-Corasick trie from the patterns in search_params
+ *
+ * @param params Search parameters containing patterns
+ * @return A new Aho-Corasick trie, or NULL on failure
+ */
+ac_trie_t *ac_trie_build(const search_params_t *params);
 
-#ifdef __cplusplus
-}
-#endif
+/**
+ * Free an Aho-Corasick trie
+ *
+ * @param trie The trie to free
+ */
+void ac_trie_free(ac_trie_t *trie);
 
-#endif /* KREP_AHO_CORASICK_H */
+/**
+ * Search for all patterns in the text using the Aho-Corasick algorithm
+ *
+ * @param params Search parameters including patterns and options
+ * @param text_start Pointer to the start of the text
+ * @param text_len Length of the text
+ * @param result Match result structure to store positions (if track_positions is true)
+ * @return The number of matches found (or lines matching if count_lines_mode is true)
+ */
+uint64_t aho_corasick_search(const search_params_t *params,
+                             const char *text_start,
+                             size_t text_len,
+                             match_result_t *result);
+
+#endif /* AHO_CORASICK_H */

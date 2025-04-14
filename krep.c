@@ -404,13 +404,14 @@ static bool ensure_line_buffer_capacity(char **buffer_ptr, size_t *capacity_ptr,
     return true; // Capacity is sufficient
 }
 
-size_t print_matching_items(const char *filename, const char *text, size_t text_len, const match_result_t *result)
+size_t print_matching_items(const char *filename, const char *text, size_t text_len, const match_result_t *result, const search_params_t *params)
 {
     // Basic validation: No results, no text, or zero matches means nothing to print.
     if (!result || !text || result->count == 0)
         return 0;
 
     size_t items_printed_count = 0;
+    size_t max_count = params->max_count; // Get max_count from params
 
     // Get global configuration values
     extern bool only_matching;        // External variable declared in krep.h
@@ -568,6 +569,12 @@ size_t print_matching_items(const char *filename, const char *text, size_t text_
         // Iterate through all matches in order
         for (uint64_t i = 0; i < result->count; i++)
         {
+            // Check max_count limit before processing each match
+            if (max_count != SIZE_MAX && items_printed_count >= max_count)
+            {
+                break; // Stop processing if limit is reached
+            }
+
             size_t start = result->positions[i].start_offset;
             size_t end = result->positions[i].end_offset;
 
@@ -776,6 +783,12 @@ size_t print_matching_items(const char *filename, const char *text, size_t text_
         uint64_t i = 0;
         while (i < result->count)
         {
+            // Check max_count limit before processing each line
+            if (max_count != SIZE_MAX && items_printed_count >= max_count)
+            {
+                break; // Stop processing if limit is reached
+            }
+
             size_t first_match_start_on_line = result->positions[i].start_offset;
 
             // Basic validation for the starting match offset
@@ -986,7 +999,7 @@ size_t print_matching_items(const char *filename, const char *text, size_t text_
             }
 
             // Update tracking variables
-            items_printed_count++;
+            items_printed_count++;                // Increment after successfully printing/batching a line
             last_printed_line_start = line_start; // Mark this line as printed
 
             // Advance the main loop index 'i' past all matches processed for this line
@@ -1046,6 +1059,7 @@ void print_usage(const char *program_name)
     printf("krep v%s - A high-performance string search utility (Optimized)\n\n", VERSION);
     printf("Usage: %s [OPTIONS] PATTERN [FILE | DIRECTORY]\n", program_name);
     printf("   or: %s [OPTIONS] -e PATTERN [-e PATTERN...] [FILE | DIRECTORY]\n", program_name);
+    printf("   or: %s [OPTIONS] -f FILE [FILE | DIRECTORY]\n", program_name);
     printf("   or: %s [OPTIONS] -s PATTERN STRING_TO_SEARCH\n", program_name);
     printf("   or: %s [OPTIONS] PATTERN < FILE\n", program_name);
     printf("   or: cat FILE | %s [OPTIONS] PATTERN\n\n", program_name);
@@ -1054,6 +1068,7 @@ void print_usage(const char *program_name)
     printf("  -c             Count matching lines. Only a count of lines is printed.\n");
     printf("  -o             Only matching. Print only the matched parts of lines, one per line.\n");
     printf("  -e PATTERN     Specify pattern. Can be used multiple times (treated as OR for literal, combined for regex).\n");
+    printf("  -f FILE        Read patterns from FILE, one per line.\n");
     printf("  -E             Interpret PATTERN(s) as POSIX Extended Regular Expression(s).\n");
     printf("                 If multiple -e used with -E, they are combined with '|'.\n");
     printf("  -F             Interpret PATTERN(s) as fixed strings (literal). Default if not -E.\n");
@@ -1063,7 +1078,8 @@ void print_usage(const char *program_name)
     printf("  --color[=WHEN] Control color output ('always', 'never', 'auto'). Default: 'auto'.\n");
     printf("  --no-simd      Explicitly disable SIMD acceleration.\n");
     printf("  -v             Show version information and exit.\n");
-    printf("  -h, --help     Show this help message and exit.\n\n");
+    printf("  -h, --help     Show this help message and exit.\n");
+    printf("  -m NUM         Stop reading a file after NUM matching lines.\n\n");
     printf("EXIT STATUS:\n");
     printf("  0 if matches were found,\n");
     printf("  1 if no matches were found,\n");
@@ -1135,21 +1151,25 @@ void prepare_bad_char_table(const unsigned char *pattern, size_t pattern_len, in
     }
 }
 
-// Boyer-Moore-Horspool search function (Updated Signature)
-// Returns line count (-c) or match count (other modes).
 // Adds positions to 'result' if params->track_positions is true.
 uint64_t boyer_moore_search(const search_params_t *params,
                             const char *text_start,
                             size_t text_len,
                             match_result_t *result) // For position tracking (can be NULL)
 {
-    uint64_t count = 0; // Line or match count
+    // --- Add max_count == 0 check ---
+    if (params->max_count == 0 && (params->count_lines_mode || params->track_positions)) // Check only if counting matters
+        return 0;
+    // --- End add ---
+
+    uint64_t current_count = 0; // Use local counter for limit check
     int bad_char_table[256];
     const unsigned char *search_pattern = (const unsigned char *)params->pattern;
     size_t pattern_len = params->pattern_len;
     bool case_sensitive = params->case_sensitive;
     bool count_lines_mode = params->count_lines_mode;
     bool track_positions = params->track_positions;
+    size_t max_count = params->max_count; // Get max_count
 
     if (pattern_len == 0 || text_len < pattern_len)
         return 0; // Cannot find an empty or too-long pattern
@@ -1179,90 +1199,198 @@ uint64_t boyer_moore_search(const search_params_t *params,
         }
 
         // If the last character matches, check the rest of the pattern
-        if (last_char_match && pattern_len > 1) // Check full pattern only if needed
+        if (last_char_match) // Check full pattern only if needed (removed && pattern_len > 1)
         {
             // Compare the full pattern
-            bool full_match = case_sensitive
-                                  ? (memcmp(utext_start + i, search_pattern, pattern_len - 1) == 0) // Compare first N-1 chars
-                                  : (memory_equals_case_insensitive(utext_start + i, search_pattern, pattern_len - 1));
+            bool full_match = true; // Assume match if pattern_len is 1
+            if (pattern_len > 1)
+            {
+                if (case_sensitive)
+                {
+                    // Use memcmp for potential speedup
+                    full_match = (memcmp(utext_start + i, search_pattern, pattern_len - 1) == 0);
+                }
+                else
+                {
+                    // Use helper for case-insensitive comparison
+                    full_match = memory_equals_case_insensitive(utext_start + i, search_pattern, pattern_len - 1);
+                }
+            }
 
             if (full_match)
             {
                 // --- Match Found ---
+                bool count_incremented_this_match = false;
                 if (count_lines_mode) // -c mode
                 {
                     size_t line_start = find_line_start(text_start, text_len, i);
                     if (line_start != last_counted_line_start)
                     {
-                        count++; // Increment line count
+                        current_count++;
                         last_counted_line_start = line_start;
-                        // OPTIMIZATION for -c: Skip to the end of the current line
-                        size_t line_end = find_line_end(text_start, text_len, line_start);
-                        i = (line_end < text_len) ? line_end + 1 : text_len;
-                        continue; // Restart while loop
+                        count_incremented_this_match = true;
                     }
-                    // If match is on an already counted line, advance by 1 to find next match
-                    i++;
                 }
-                else // Not -c mode (default, -o, or -co)
+                else // Not -c mode (default, -o, or internal match counting)
                 {
-                    count++;                       // Increment match count
-                    if (track_positions && result) // If tracking positions (default or -o)
+                    current_count++; // Increment match count
+                    count_incremented_this_match = true;
+                    if (track_positions && result)
                     {
-                        if (!match_result_add(result, i, i + pattern_len))
+                        // Add position only if tracking and within limit
+                        // Check <= because current_count was just incremented
+                        if (current_count <= max_count)
                         {
-                            fprintf(stderr, "Warning: Failed to add match position.\n");
+                            if (!match_result_add(result, i, i + pattern_len))
+                            {
+                                // Handle allocation failure if necessary (e.g., log error)
+                                // For now, just stop adding positions
+                                fprintf(stderr, "Warning: Failed to add match position, potential memory issue.\n");
+                            }
                         }
                     }
-                    // Advance by 1 to find overlapping matches (needed for -o)
-                    i++;
                 }
-            }
-            else
-            {
-                // Last char matched, but full pattern didn't. Calculate shift.
-                // Use the character in the text that caused the mismatch (tc_last)
-                int shift = bad_char_table[case_sensitive ? tc_last : lower_table[tc_last]];
-                // Ensure minimum shift of 1
-                i += (shift > 0 ? shift : 1);
+
+                // Check max_count limit *after* processing the match
+                if (count_incremented_this_match && current_count >= max_count)
+                {
+                    break; // Stop searching this chunk/file
+                }
+
+                // Shift by 1 after a match to find overlapping patterns correctly in BM
+                i++;
+                continue; // Skip the bad character shift for this iteration
             }
         }
-        else if (last_char_match && pattern_len == 1)
+
+        // --- No Match or Partial Match ---
+        // Calculate shift using the bad character rule
+        unsigned char bad_char = utext_start[i + pattern_len - 1];
+        int shift = bad_char_table[case_sensitive ? bad_char : lower_table[bad_char]];
+
+        // Ensure shift is at least 1 to prevent infinite loops
+        i += (shift > 0 ? shift : 1);
+    }
+
+    // Return the count (lines or matches depending on mode)
+    return current_count;
+}
+
+// --- Regex Search ---
+
+uint64_t regex_search(const search_params_t *params,
+                      const char *text_start,
+                      size_t text_len,
+                      match_result_t *result) // For position tracking (can be NULL)
+{
+    if (params->max_count == 0 && (params->count_lines_mode || params->track_positions))
+        return 0;
+    if (!params->compiled_regex || text_len == 0)
+    {
+        // Special case: If the text is empty but the regex matches the empty string
+        if (text_len == 0 && params->compiled_regex)
         {
-            // Single character pattern matched
-            if (count_lines_mode) // -c mode
+            // Test if the regex matches an empty string (like ^$)
+            regmatch_t pmatch[1];
+            if (regexec(params->compiled_regex, "", 1, pmatch, 0) == 0)
             {
-                size_t line_start = find_line_start(text_start, text_len, i);
+                // The regex matches the empty string
+                if (params->track_positions && result)
+                {
+                    match_result_add(result, 0, 0);
+                }
+                return 1; // Return 1 match for empty string regex (e.g., ^$)
+            }
+        }
+        return 0;
+    }
+
+    uint64_t current_count = 0;
+    bool count_lines_mode = params->count_lines_mode;
+    bool track_positions = params->track_positions;
+    size_t max_count = params->max_count;
+    const regex_t *regex = params->compiled_regex;
+    regmatch_t pmatch[1]; // We only need the overall match bounds (pmatch[0])
+    const char *current_pos = text_start;
+    size_t remaining_len = text_len;
+    size_t last_counted_line_start = SIZE_MAX;
+
+    while (remaining_len > 0)
+    {
+        // REG_NOTBOL: The first character is not the beginning of a line.
+        // REG_NOTEOL: The last character is not the end of a line.
+        // We adjust flags based on whether current_pos is at the very start.
+        int eflags = (current_pos == text_start) ? 0 : REG_NOTBOL;
+
+        if (regexec(regex, current_pos, 1, pmatch, eflags) == 0)
+        {
+            // Match found
+            size_t match_start_offset = (current_pos - text_start) + pmatch[0].rm_so;
+            size_t match_end_offset = (current_pos - text_start) + pmatch[0].rm_eo;
+
+            // --- Process Match ---
+            bool count_incremented_this_match = false;
+            if (count_lines_mode)
+            {
+                size_t line_start = find_line_start(text_start, text_len, match_start_offset);
                 if (line_start != last_counted_line_start)
                 {
-                    count++; // Increment line count
+                    current_count++;
                     last_counted_line_start = line_start;
-                    size_t line_end = find_line_end(text_start, text_len, line_start);
-                    i = (line_end < text_len) ? line_end + 1 : text_len;
-                    continue;
+                    count_incremented_this_match = true;
                 }
-                i++; // Advance by 1 if on same line
             }
             else // Not -c mode
             {
-                count++;
+                current_count++;
+                count_incremented_this_match = true;
                 if (track_positions && result)
                 {
-                    match_result_add(result, i, i + 1);
+                    // Add position only if tracking and within limit
+                    if (current_count <= max_count)
+                    {
+                        if (!match_result_add(result, match_start_offset, match_end_offset))
+                        {
+                            fprintf(stderr, "Warning: Failed to add regex match position.\n");
+                        }
+                    }
                 }
-                i++; // Advance by 1
+            }
+
+            // Check max_count limit *after* processing the match
+            if (count_incremented_this_match && current_count >= max_count)
+            {
+                break; // Stop searching
+            }
+
+            // Advance search position past the current match
+            // If the match has zero length (e.g., ^$), advance by one character
+            // to avoid infinite loops. Otherwise, advance past the end of the match.
+            size_t advance = (pmatch[0].rm_eo > 0) ? (size_t)pmatch[0].rm_eo : 1;
+
+            // Boundary check: ensure advance doesn't go past remaining_len
+            if (advance > remaining_len)
+            {
+                break; // Should not happen with valid regexec results, but safety first
+            }
+
+            current_pos += advance;
+            remaining_len -= advance;
+
+            // If we advanced zero or one char after a zero-length match at the end, break
+            if (remaining_len == 0 && advance <= 1 && pmatch[0].rm_so == pmatch[0].rm_eo)
+            {
+                break;
             }
         }
         else
         {
-            // Last character doesn't match - use bad character shift based on text character tc_last
-            int shift = bad_char_table[case_sensitive ? tc_last : lower_table[tc_last]];
-            // Ensure minimum shift of 1
-            i += (shift > 0 ? shift : 1);
+            // No more matches found in the remaining text
+            break;
         }
     }
 
-    return count; // Return line count or match count
+    return current_count;
 }
 
 // --- Knuth-Morris-Pratt (KMP) Algorithm ---
@@ -1317,12 +1445,18 @@ uint64_t kmp_search(const search_params_t *params,
                     size_t text_len,
                     match_result_t *result) // For position tracking (can be NULL)
 {
-    uint64_t count = 0; // Line or match count
+    // --- Add max_count == 0 check ---
+    if (params->max_count == 0)
+        return 0;
+    // --- End add ---
+
+    uint64_t current_count = 0; // Use local counter for limit check
     const unsigned char *search_pattern = (const unsigned char *)params->pattern;
     size_t pattern_len = params->pattern_len;
     bool case_sensitive = params->case_sensitive;
     bool count_lines_mode = params->count_lines_mode;
     bool track_positions = params->track_positions;
+    size_t max_count = params->max_count; // Get max_count
 
     if (pattern_len == 0 || text_len < pattern_len)
         return 0;
@@ -1366,8 +1500,16 @@ uint64_t kmp_search(const search_params_t *params,
                 size_t line_start = find_line_start(text_start, text_len, match_start_index);
                 if (line_start != last_counted_line_start)
                 {
-                    count++; // Increment line count
+                    // --- Check max_count BEFORE incrementing ---
+                    if (max_count != SIZE_MAX && current_count >= max_count)
+                    {
+                        break; // Limit reached
+                    }
+                    // --- End check ---
+
+                    current_count++; // Increment line count
                     last_counted_line_start = line_start;
+
                     // Skip to end of current line (optimization for -c mode)
                     size_t line_end = find_line_end(text_start, text_len, line_start);
                     i = (line_end < text_len) ? line_end + 1 : text_len;
@@ -1379,7 +1521,19 @@ uint64_t kmp_search(const search_params_t *params,
             }
             else // Not -c mode (default, -o, or -co)
             {
-                count++;                       // Increment match count
+                // --- Check max_count BEFORE incrementing ---
+                if (max_count != SIZE_MAX && current_count >= max_count)
+                {
+                    if (track_positions && result) // Add final match
+                    {
+                        match_result_add(result, match_start_index, match_start_index + pattern_len);
+                    }
+                    break; // Limit reached
+                }
+                // --- End check ---
+
+                current_count++; // Increment match count
+
                 if (track_positions && result) // If tracking positions (default or -o)
                 {
                     // Add the match position without deduplication
@@ -1416,979 +1570,12 @@ uint64_t kmp_search(const search_params_t *params,
         }
     } // end while
 
-    free(lps);    // Free the LPS array
-    return count; // Return line count or match count
+    free(lps);            // Free the LPS array
+    return current_count; // Return line count or match count
 }
-
-// --- Regex Search ---
-
-// Regex search function (Updated Signature)
-// Returns line count (-c) or match count (other modes).
-// Adds positions to 'result' if params->track_positions is true.
-// NOTE: Regex performance heavily depends on the system's POSIX regex library.
-// Tools like ripgrep use highly optimized regex engines (like Rust's regex crate)
-// which can be significantly faster.
-uint64_t regex_search(const search_params_t *params,
-                      const char *text_start,
-                      size_t text_len,
-                      match_result_t *result) // For position tracking (can be NULL)
-{
-    uint64_t count = 0; // Line or match count
-    regmatch_t match;   // Structure to hold match offsets
-    const regex_t *compiled_regex = params->compiled_regex;
-    bool count_lines_mode = params->count_lines_mode;
-    bool track_positions = params->track_positions;
-
-    if (!compiled_regex) // Should not happen if called correctly
-        return 0;
-
-    const char *search_ptr = text_start;       // Current position in text to start search
-    size_t current_offset = 0;                 // Offset corresponding to search_ptr
-    int exec_flags = 0;                        // Flags for regexec
-    size_t last_counted_line_start = SIZE_MAX; // For -c mode tracking
-
-    // Handle empty text edge case separately
-    if (text_len == 0)
-    {
-        // Check if the regex matches an empty string
-        int ret = regexec(compiled_regex, "", 1, &match, exec_flags);
-        if (ret == 0 && match.rm_so == 0 && match.rm_eo == 0)
-        {              // Match empty string
-            count = 1; // 1 line or 1 match
-            if (track_positions && result)
-            {
-                if (!match_result_add(result, 0, 0))
-                {
-                    fprintf(stderr, "Warning: Failed to add regex match position (empty string).\n");
-                }
-            }
-        }
-        else if (ret != REG_NOMATCH) // Report errors other than no match
-        {
-            char errbuf[256];
-            regerror(ret, compiled_regex, errbuf, sizeof(errbuf));
-            fprintf(stderr, "Error executing regex on empty string: %s\n", errbuf);
-        }
-        return count;
-    }
-
-    // Loop through the text searching for matches
-    while (current_offset <= text_len) // Use <= to allow matching at the very end
-    {
-        // Execute the regex search starting from search_ptr
-        // Adjust search pointer and flags for subsequent searches
-        search_ptr = text_start + current_offset;
-        exec_flags = (current_offset == 0) ? 0 : REG_NOTBOL; // Set REG_NOTBOL after first search
-
-        // If search_ptr points beyond the end, break
-        if (current_offset > text_len)
-            break;
-
-        int ret = regexec(compiled_regex, search_ptr, 1, &match, exec_flags);
-
-        if (ret == REG_NOMATCH)
-        {
-            break; // No more matches found in the remaining text
-        }
-        if (ret != 0)
-        {
-            // Handle regex execution errors
-            char errbuf[256];
-            regerror(ret, compiled_regex, errbuf, sizeof(errbuf));
-            fprintf(stderr, "Error during regex execution: %s\n", errbuf);
-            break; // Stop searching on error
-        }
-
-        // Calculate absolute offsets of the match in the original text
-        size_t match_start_abs = current_offset + match.rm_so;
-        size_t match_end_abs = current_offset + match.rm_eo;
-
-        // Bounds check (safety)
-        if (match_start_abs > text_len)
-            break; // Should not happen
-        if (match_end_abs > text_len)
-            match_end_abs = text_len; // Clamp end
-
-        // --- Match Found ---
-        if (count_lines_mode) // -c mode
-        {
-            size_t line_start = find_line_start(text_start, text_len, match_start_abs);
-            if (line_start != last_counted_line_start)
-            {
-                count++; // Increment line count
-                last_counted_line_start = line_start;
-                // OPTIMIZATION for -c: Skip to the end of the current line
-                size_t line_end = find_line_end(text_start, text_len, line_start);
-                // Calculate the absolute offset to start the next search from (after newline)
-                size_t advance_abs = (line_end < text_len) ? line_end + 1 : text_len;
-
-                // Ensure we advance past the current match end, especially for multi-line matches
-                if (advance_abs <= match_end_abs)
-                {
-                    advance_abs = match_end_abs;
-                    // Special handling for zero-length matches to ensure progress
-                    if (match_start_abs == match_end_abs && advance_abs < text_len)
-                    {
-                        advance_abs++;
-                    }
-                }
-                // Safety check against infinite loops if advance_abs didn't move
-                if (advance_abs <= current_offset)
-                {
-                    advance_abs = current_offset + 1;
-                }
-
-                if (advance_abs > text_len)
-                    advance_abs = text_len; // Clamp to end
-
-                // Update offset for the next iteration
-                current_offset = advance_abs;
-                continue; // Restart the while loop
-            }
-            // If match is on an already counted line, don't increment count, just advance past match
-        }
-        else // Not -c mode (default, -o, or -co)
-        {
-            count++;                       // Increment match count
-            if (track_positions && result) // If tracking positions (default or -o)
-            {
-                if (!match_result_add(result, match_start_abs, match_end_abs))
-                {
-                    fprintf(stderr, "Warning: Failed to add regex match position.\n");
-                }
-            }
-        }
-
-        // --- Advance Search Position for Next Match ---
-        // Calculate the offset within the current search_ptr to advance past the current match
-        regoff_t advance_rel = match.rm_eo;
-        // Special handling for zero-length matches to prevent infinite loops: advance by at least 1 character
-        if (match.rm_so == match.rm_eo)
-        {
-            advance_rel++;
-        }
-        // Ensure we always advance if a match was found
-        if (advance_rel <= 0)
-        {
-            advance_rel = 1;
-        }
-
-        // Calculate the next absolute offset to search from
-        size_t next_offset = current_offset + advance_rel;
-
-        // Safety check: if we didn't advance, force an advance of 1
-        if (next_offset <= current_offset)
-        {
-            next_offset = current_offset + 1;
-        }
-
-        // Update offset for the next iteration
-        current_offset = next_offset;
-
-    } // End while loop
-
-    return count; // Return line count or match count
-}
-
-// --- SIMD Search Implementations ---
-// NOTE: Current SIMD implementations only support case-sensitive literal search.
-// Case-insensitive SIMD is significantly more complex.
-
-#if KREP_USE_SSE42
-uint64_t simd_sse42_search(const search_params_t *params,
-                           const char *text_start,
-                           size_t text_len,
-                           match_result_t *result)
-{
-    uint64_t count = 0;
-    const char *pattern = params->pattern;
-    size_t pattern_len = params->pattern_len;
-    bool count_lines_mode = params->count_lines_mode;
-    bool track_positions = params->track_positions;
-    bool case_sensitive = params->case_sensitive;
-
-    // Fall back to Boyer-Moore for empty pattern or pattern too long
-    if (pattern_len == 0 || pattern_len > 16 || text_len < pattern_len)
-    {
-        return boyer_moore_search(params, text_start, text_len, result);
-    }
-
-    size_t last_counted_line_start = SIZE_MAX;
-    size_t pos = 0;
-
-    // For specific pattern cases, use non-overlapping mode
-    bool non_overlapping_mode = false;
-    if (pattern_len > 1 &&
-        ((pattern_len == 3 && memcmp(pattern, "aba", 3) == 0) ||
-         (pattern_len == 2 && memcmp(pattern, "aa", 2) == 0)))
-    {
-        non_overlapping_mode = true;
-    }
-
-    // For case insensitive search, create lowercase pattern
-    char lowercase_pattern[16] = {0};
-    if (!case_sensitive)
-    {
-        for (size_t i = 0; i < pattern_len; i++)
-        {
-            lowercase_pattern[i] = lower_table[(unsigned char)pattern[i]];
-        }
-        pattern = lowercase_pattern;
-    }
-
-    // Load pattern into XMM register
-    __m128i xmm_pattern;
-    if (pattern_len == 16)
-    {
-        xmm_pattern = _mm_loadu_si128((const __m128i *)pattern);
-    }
-    else
-    {
-        // For shorter patterns, pad with zeros
-        char pattern_buf[16] = {0};
-        memcpy(pattern_buf, pattern, pattern_len);
-        xmm_pattern = _mm_loadu_si128((const __m128i *)pattern_buf);
-    }
-
-    // Prepare buffer for case-insensitive processing (if needed)
-    char text_buf[16] = {0};
-    __m128i xmm_text;
-
-    // OPTIMIZATION: Pre-compute comparison mask for specific pattern length
-    const int mode = _SIDD_UBYTE_OPS | _SIDD_CMP_EQUAL_ORDERED |
-                     _SIDD_POSITIVE_POLARITY | _SIDD_LEAST_SIGNIFICANT;
-
-    // OPTIMIZATION: For text segments batching when case_sensitive is false
-    size_t batch_buffer_capacity = 4096; // Process 4KB at a time for case-insensitive
-    char *batch_buffer = NULL;
-
-    if (!case_sensitive && text_len >= 16)
-    {
-        // Allocate batch buffer for case-insensitive processing
-        batch_buffer = malloc(batch_buffer_capacity);
-        if (!batch_buffer)
-        {
-            // Fallback to Boyer-Moore if allocation fails
-            return boyer_moore_search(params, text_start, text_len, result);
-        }
-    }
-
-    while (pos <= text_len - pattern_len)
-    {
-        size_t chunk_end = pos;
-        size_t match_start = SIZE_MAX;
-        int match_pos = -1;
-
-        if (!case_sensitive)
-        {
-            // Case-insensitive search with batching optimization
-            if (batch_buffer && text_len - pos >= 16)
-            {
-                // Determine batch size to process
-                size_t batch_size = (text_len - pos < batch_buffer_capacity) ? text_len - pos : batch_buffer_capacity;
-
-                // Don't make batch too small - ensure at least one potential match can fit
-                if (batch_size < pattern_len)
-                    batch_size = pattern_len;
-
-                // Convert chunk to lowercase in bulk
-                for (size_t i = 0; i < batch_size; i++)
-                {
-                    batch_buffer[i] = lower_table[(unsigned char)text_start[pos + i]];
-                }
-
-                // Process the lowercase batch
-                size_t batch_pos = 0;
-                while (batch_pos <= batch_size - pattern_len)
-                {
-                    // Load next 16 bytes or less from batch
-                    size_t bytes_to_load = (batch_size - batch_pos >= 16) ? 16 : (batch_size - batch_pos);
-
-                    if (bytes_to_load < pattern_len)
-                        break; // Not enough bytes left for a match
-
-                    xmm_text = _mm_loadu_si128((const __m128i *)(batch_buffer + batch_pos));
-
-                    // Find position of first potential match
-                    match_pos = _mm_cmpestri(xmm_pattern, pattern_len,
-                                             xmm_text, (int)bytes_to_load, mode);
-
-                    if (match_pos < (int)bytes_to_load)
-                    {
-                        // Found match, calculate absolute position
-                        match_start = pos + batch_pos + match_pos;
-
-                        // Record match
-                        if (count_lines_mode)
-                        {
-                            size_t line_start = find_line_start(text_start, text_len, match_start);
-                            if (line_start != last_counted_line_start)
-                            {
-                                count++;
-                                last_counted_line_start = line_start;
-
-                                // Skip to end of line for -c mode
-                                size_t line_end = find_line_end(text_start, text_len, line_start);
-                                pos = line_end + 1;
-                            }
-                            else
-                            {
-                                // Already counted this line, move past this match
-                                batch_pos += match_pos + 1;
-                            }
-                        }
-                        else
-                        {
-                            count++;
-                            if (track_positions && result)
-                            {
-                                match_result_add(result, match_start, match_start + pattern_len);
-                            }
-
-                            // Advance within the batch
-                            if (non_overlapping_mode)
-                                batch_pos += match_pos + pattern_len;
-                            else
-                                batch_pos += match_pos + 1;
-                        }
-                    }
-                    else
-                    {
-                        // No match in current 16 bytes, advance within the batch
-                        batch_pos += bytes_to_load - pattern_len + 1;
-                    }
-                }
-
-                // Advance pos past what we've processed minus (pattern_len-1) to catch potential overlaps
-                pos += batch_size - (pattern_len - 1);
-            }
-            else
-            {
-                // Fallback for small text segments or when allocation failed
-                // Process just 16 bytes at a time (original logic)
-                size_t bytes_to_load = (text_len - pos >= 16) ? 16 : (text_len - pos);
-
-                // Convert chunk to lowercase
-                memcpy(text_buf, text_start + pos, bytes_to_load);
-                for (size_t i = 0; i < bytes_to_load; i++)
-                {
-                    text_buf[i] = lower_table[(unsigned char)text_buf[i]];
-                }
-                xmm_text = _mm_loadu_si128((const __m128i *)text_buf);
-
-                // Find position of first potential match
-                match_pos = _mm_cmpestri(xmm_pattern, pattern_len,
-                                         xmm_text, (int)bytes_to_load, mode);
-
-                if (match_pos < (int)bytes_to_load)
-                {
-                    match_start = pos + match_pos;
-
-                    // Record match (similar to above)
-                    if (count_lines_mode)
-                    {
-                        size_t line_start = find_line_start(text_start, text_len, match_start);
-                        if (line_start != last_counted_line_start)
-                        {
-                            count++;
-                            last_counted_line_start = line_start;
-                            pos = find_line_end(text_start, text_len, line_start) + 1;
-                        }
-                        else
-                        {
-                            pos = match_start + 1;
-                        }
-                    }
-                    else
-                    {
-                        count++;
-                        if (track_positions && result)
-                        {
-                            match_result_add(result, match_start, match_start + pattern_len);
-                        }
-                        pos = match_start + 1;
-                    }
-                }
-                else
-                {
-                    // No match in current 16 bytes, advance
-                    pos++;
-                }
-            }
-        }
-        else
-        {
-            // Case-sensitive search (original optimized path)
-            size_t bytes_to_load = (text_len - pos >= 16) ? 16 : (text_len - pos);
-
-            // Direct load for case sensitive search
-            xmm_text = _mm_loadu_si128((const __m128i *)(text_start + pos));
-
-            // Find position of first potential match
-            match_pos = _mm_cmpestri(xmm_pattern, pattern_len,
-                                     xmm_text, (int)bytes_to_load, mode);
-
-            if (match_pos < (int)bytes_to_load)
-            {
-                // Found a match at position pos + match_pos
-                match_start = pos + match_pos;
-
-                if (count_lines_mode)
-                {
-                    size_t line_start = find_line_start(text_start, text_len, match_start);
-                    if (line_start != last_counted_line_start)
-                    {
-                        count++;
-                        last_counted_line_start = line_start;
-                        pos = find_line_end(text_start, text_len, line_start) + 1;
-                    }
-                    else
-                    {
-                        pos = match_start + 1;
-                    }
-                }
-                else
-                {
-                    count++;
-                    if (track_positions && result)
-                    {
-                        match_result_add(result, match_start, match_start + pattern_len);
-                    }
-
-                    // Non-overlapping mode: advance by pattern length instead of 1
-                    if (non_overlapping_mode)
-                        pos = match_start + pattern_len;
-                    else
-                        pos = match_start + 1;
-                }
-            }
-            else
-            {
-                // We can safely advance by (16 - pattern_len + 1) because the SIMD search
-                // would have found any match starting up to (16 - pattern_len) bytes in
-                pos += (bytes_to_load - pattern_len + 1) > 0 ? (bytes_to_load - pattern_len + 1) : 1;
-            }
-        }
-    }
-
-    // Free allocated memory
-    if (batch_buffer)
-    {
-        free(batch_buffer);
-    }
-
-    return count;
-}
-#endif // KREP_USE_SSE42
-
-#if KREP_USE_AVX2
-// AVX2 search implementation (Updated Signature)
-// Supports case-insensitive search with SIMD acceleration
-uint64_t simd_avx2_search(const search_params_t *params,
-                          const char *text_start,
-                          size_t text_len,
-                          match_result_t *result) // For position tracking (can be NULL)
-{
-    uint64_t count = 0; // Line or match count
-    const char *pattern = params->pattern;
-    size_t pattern_len = params->pattern_len;
-    bool count_lines_mode = params->count_lines_mode;
-    bool track_positions = params->track_positions;
-    bool case_sensitive = params->case_sensitive;
-
-    // Fallback for unsupported cases:
-    // - Pattern is empty or too long for this AVX2 implementation (> 32 bytes).
-    // - Text is shorter than the pattern.
-    if (pattern_len == 0 || pattern_len > 32 || text_len < pattern_len)
-    {
-        // Fallback to SSE4.2 if available and pattern fits (<=16) and case-sensitive
-#if KREP_USE_SSE42
-        if (pattern_len <= 16 && case_sensitive)
-            return simd_sse42_search(params, text_start, text_len, result);
-#endif
-        // Use Boyer-Moore as the general fallback
-        return boyer_moore_search(params, text_start, text_len, result);
-    }
-
-    size_t current_offset = 0;
-    size_t last_counted_line_start = SIZE_MAX; // For -c mode tracking
-
-    // For case-insensitive search, we need a lowercase version of the pattern
-    char lowercase_pattern[32];
-    if (!case_sensitive)
-    {
-        for (size_t i = 0; i < pattern_len; i++)
-        {
-            lowercase_pattern[i] = lower_table[(unsigned char)pattern[i]];
-        }
-        pattern = lowercase_pattern; // Use the lowercase pattern for comparisons
-    }
-
-    // Broadcast the first byte of the (potentially lowercased) pattern
-    __m256i first_byte_pattern = _mm256_set1_epi8(pattern[0]);
-    // Broadcast the last byte for potential optimization (optional)
-    // __m256i last_byte_pattern = _mm256_set1_epi8(pattern[pattern_len - 1]);
-
-    // Process the text as long as a full pattern can potentially fit
-    while (current_offset + pattern_len <= text_len)
-    {
-        // Determine chunk size (typically 32 bytes for AVX2)
-        size_t chunk_size = (current_offset + 32 <= text_len) ? 32 : (text_len - current_offset);
-
-        // Ensure chunk is large enough for the pattern
-        if (chunk_size < pattern_len)
-        {
-            break; // Stop if remaining text is too short
-        }
-
-        // Load chunk_size bytes of text
-        __m256i text_chunk;
-        if (chunk_size == 32)
-        {
-            text_chunk = _mm256_loadu_si256((__m256i *)(text_start + current_offset));
-        }
-        else
-        {
-            // Handle tail case: load into a zeroed buffer
-            char buffer[32] __attribute__((aligned(32))) = {0};
-            memcpy(buffer, text_start + current_offset, chunk_size);
-            text_chunk = _mm256_load_si256((__m256i *)buffer);
-        }
-
-        // Prepare text for comparison (convert to lowercase if needed)
-        __m256i text_for_comparison = text_chunk;
-        if (!case_sensitive)
-        {
-            // Efficiently convert chunk to lowercase using AVX2
-            __m256i a_minus_one = _mm256_set1_epi8('A' - 1);
-            __m256i z_plus_one = _mm256_set1_epi8('Z' + 1);
-            __m256i is_greater = _mm256_cmpgt_epi8(text_chunk, a_minus_one);       // text > 'A'-1
-            __m256i is_smaller = _mm256_cmpgt_epi8(z_plus_one, text_chunk);        // 'Z'+1 > text
-            __m256i is_uppercase = _mm256_and_si256(is_greater, is_smaller);       // ('A'-1 < text) & (text < 'Z'+1)
-            __m256i to_add = _mm256_and_si256(_mm256_set1_epi8(32), is_uppercase); // 32 if uppercase, 0 otherwise
-            text_for_comparison = _mm256_add_epi8(text_chunk, to_add);             // Add 32 to uppercase letters
-        }
-
-        // Find positions matching the first character of the pattern
-        __m256i match = _mm256_cmpeq_epi8(text_for_comparison, first_byte_pattern);
-        unsigned int mask = _mm256_movemask_epi8(match);
-
-        // If no potential first-byte match in this chunk, advance.
-        // Advancing by 32 is fast but might miss matches crossing the boundary.
-        // Advancing by 1 is safe for overlaps. Let's stick with 1 for simplicity/correctness for -o.
-        if (mask == 0)
-        {
-            current_offset++;
-            continue;
-        }
-
-        // Track if we found a match in this chunk to determine advancement
-        bool found_match = false;
-        size_t advance_offset = current_offset + 1; // Default advance by 1
-
-        // Process each potential match indicated by the mask
-        while (mask)
-        {
-            // Find position of the least significant set bit (potential match start)
-            int match_pos_in_chunk = __builtin_ctz(mask);
-
-            // Clear the bit we're processing
-            mask &= ~(1u << match_pos_in_chunk);
-
-            // Ensure the full pattern fits within the bounds of the original text
-            size_t potential_match_start_abs = current_offset + match_pos_in_chunk;
-            if (potential_match_start_abs + pattern_len <= text_len)
-            {
-                // Verify the full pattern match using memcmp or case-insensitive helper
-                bool is_match = case_sensitive
-                                    ? (memcmp(text_start + potential_match_start_abs, pattern, pattern_len) == 0)
-                                    : (memory_equals_case_insensitive((const unsigned char *)(text_start + potential_match_start_abs), (const unsigned char *)pattern, pattern_len));
-
-                if (is_match)
-                {
-                    found_match = true;
-                    // --- Match Found ---
-                    if (count_lines_mode) // -c mode
-                    {
-                        size_t line_start = find_line_start(text_start, text_len, potential_match_start_abs);
-                        if (line_start != last_counted_line_start)
-                        {
-                            count++; // Increment line count
-                            last_counted_line_start = line_start;
-                            // Optimization: Skip to end of line if counting lines
-                            size_t line_end = find_line_end(text_start, text_len, line_start);
-                            advance_offset = (line_end < text_len) ? line_end + 1 : text_len;
-                            // Since we jump, break inner mask loop for this chunk
-                            mask = 0;                        // Stop processing more matches in this chunk for -c
-                            current_offset = advance_offset; // Update offset directly
-                            goto next_chunk_avx2;            // Use goto to jump to the next outer loop iteration
-                        }
-                        // If on same line, don't increment count, but continue checking mask
-                    }
-                    else // Not -c mode (default or -o)
-                    {
-                        count++;                       // Increment match count
-                        if (track_positions && result) // If tracking positions
-                        {
-                            if (!match_result_add(result, potential_match_start_abs, potential_match_start_abs + pattern_len))
-                            {
-                                fprintf(stderr, "Warning: Failed to add match position (AVX2).\n");
-                            }
-                        }
-                        // Advance by pattern_len for -o to avoid overlapping matches, 1 otherwise
-                        advance_offset = potential_match_start_abs + (only_matching ? pattern_len : 1);
-                    }
-                } // end if(is_match)
-            } // end if (full pattern fits)
-        } // end while(mask)
-
-        // Use found_match to determine behavior (fix the unused variable warning)
-        if (found_match && !count_lines_mode)
-        {
-            // For non -c mode, we might have updated advance_offset already
-            // This branch ensures we use the variable to avoid the warning
-        }
-        else if (!found_match)
-        {
-            // If no match was found in this chunk, advance by the default offset
-            // (already set to current_offset + 1)
-        }
-
-        // Advance outer loop offset. Use the calculated advance_offset which is
-        // either current_offset+1 (if no match found or for -o) or end_of_line+1 (for -c).
-        current_offset = advance_offset;
-
-    next_chunk_avx2:; // Label for goto when skipping in -c mode
-    } // end while (outer loop)
-
-    // --- Handle Tail ---
-    // Use Boyer-Moore for the small remaining tail if necessary.
-    if (current_offset < text_len && text_len - current_offset >= pattern_len)
-    {
-        // Create a temporary params struct pointing to the original pattern
-        search_params_t tail_params = *params;
-        // Ensure we use the correct pattern (original or lowercase)
-        // 'pattern' points to original or lowercase_pattern buffer
-        tail_params.pattern = pattern;
-        tail_params.pattern_len = params->pattern_len; // Use original length
-
-        // Allocate a temporary result struct if needed
-        match_result_t *tail_result = NULL;
-        if (track_positions && result)
-        {
-            tail_result = match_result_init(16); // Small capacity for tail
-            if (!tail_result)
-            {
-                fprintf(stderr, "Warning: Failed to allocate tail result struct (AVX2).\n");
-                // Continue without tail processing, might miss matches at the very end
-                return count;
-            }
-        }
-
-        uint64_t tail_count = boyer_moore_search(&tail_params,
-                                                 text_start + current_offset,
-                                                 text_len - current_offset,
-                                                 tail_result);
-        count += tail_count;
-
-        // Merge tail results if tracking positions
-        if (tail_result && result)
-        {
-            match_result_merge(result, tail_result, current_offset);
-            match_result_free(tail_result);
-        }
-    }
-
-    return count; // Return total line count or match count
-}
-#endif // KREP_USE_AVX2
-
-#if KREP_USE_NEON
-// NEON search implementation (Updated Signature)
-// Returns line count (-c) or match count (other modes).
-// Adds positions to 'result' if params->track_positions is true.
-// NOTE: Current NEON implementation only supports case-sensitive literal search up to 16 bytes.
-uint64_t neon_search(const search_params_t *params,
-                     const char *text_start,
-                     size_t text_len,
-                     match_result_t *result) // For position tracking (can be NULL)
-{
-    uint64_t count = 0; // Line or match count
-    const char *pattern = params->pattern;
-    size_t pattern_len = params->pattern_len;
-    bool count_lines_mode = params->count_lines_mode;
-    bool track_positions = params->track_positions;
-    bool case_sensitive = params->case_sensitive; // Needed for fallback check
-
-    // Fallback if requirements not met (pattern length, case sensitivity)
-    if (pattern_len == 0 || pattern_len > 16 || text_len < pattern_len || !case_sensitive)
-    {
-        // Fallback to Boyer-Moore
-        return boyer_moore_search(params, text_start, text_len, result);
-    }
-
-    size_t current_offset = 0;
-    size_t last_counted_line_start = SIZE_MAX; // For -c mode tracking
-
-    // Load pattern into NEON register (pad with zeros if necessary)
-    uint8x16_t neon_pattern;
-    if (pattern_len == 16)
-    {
-        neon_pattern = vld1q_u8((const uint8_t *)pattern); // Unaligned load
-    }
-    else
-    {
-        uint8_t pattern_buf[16] = {0}; // Zero-initialize buffer
-        memcpy(pattern_buf, pattern, pattern_len);
-        neon_pattern = vld1q_u8(pattern_buf); // Load from zero-padded buffer
-    }
-
-    // Create a mask to only consider the first 'pattern_len' bytes in comparisons
-    uint8_t compare_mask_bytes[16];
-    for (size_t i = 0; i < 16; ++i)
-    {
-        compare_mask_bytes[i] = (i < pattern_len) ? 0xFF : 0x00;
-    }
-    uint8x16_t compare_mask = vld1q_u8(compare_mask_bytes);
-    // Inverted mask used for the vminvq approach
-    uint8x16_t irrelevant_mask = vmvnq_u8(compare_mask); // Bytes outside pattern length become 0xFF
-
-    // Iterate through the text as long as a full pattern can fit
-    while (current_offset + pattern_len <= text_len)
-    {
-        // Load 16 bytes of text (unaligned load)
-        uint8x16_t neon_text = vld1q_u8((const uint8_t *)(text_start + current_offset));
-
-        // Compare pattern and text byte-by-byte -> 0xFF if equal, 0x00 otherwise
-        uint8x16_t comparison_result = vceqq_u8(neon_pattern, neon_text);
-
-        // Mask out comparison results for bytes beyond the pattern length
-        uint8x16_t masked_result = vandq_u8(comparison_result, compare_mask); // Result is 0x00 for irrelevant bytes
-
-        // Use vminvq approach to check if all relevant bytes matched:
-        // 1. OR the masked result with the inverted compare mask. This sets irrelevant bytes to 0xFF.
-        // 2. Find the minimum value across all 16 lanes.
-        // 3. If the minimum value is 0xFF, it means all relevant bytes in masked_result were 0xFF (match).
-        uint8x16_t temp_result = vorrq_u8(masked_result, irrelevant_mask);
-        uint8_t min_val = vminvq_u8(temp_result);
-
-        if (min_val == 0xFF) // Check if all relevant bytes matched (full pattern match at current_offset)
-        {
-            // --- Match Found ---
-            size_t match_start_abs = current_offset;
-
-            if (count_lines_mode) // -c mode
-            {
-                size_t line_start = find_line_start(text_start, text_len, match_start_abs);
-                if (line_start != last_counted_line_start)
-                {
-                    count++; // Increment line count
-                    last_counted_line_start = line_start;
-                    // OPTIMIZATION for -c: Skip to the end of the current line
-                    size_t line_end = find_line_end(text_start, text_len, line_start);
-                    // Advance offset past the newline
-                    current_offset = (line_end < text_len) ? line_end + 1 : text_len;
-                    continue; // Restart while loop
-                }
-                // If match is on an already counted line, advance by 1
-                current_offset = match_start_abs + 1;
-            }
-            else // Not -c mode (default or -o)
-            {
-                count++;
-                if (track_positions && result)
-                {
-                    if (!match_result_add(result, match_start_abs, match_start_abs + pattern_len))
-                    {
-                        fprintf(stderr, "Warning: Failed to add match position (NEON).\n");
-                    }
-                }
-                // Advance by pattern_len for -o to avoid overlapping matches, 1 otherwise
-                current_offset = match_start_abs + (only_matching ? pattern_len : 1);
-            }
-        }
-        else // No match found starting at current_offset
-        {
-            // Advance the search position by 1 (safest approach for overlaps)
-            current_offset += 1;
-        }
-    } // End of while loop
-
-    // --- Handle Tail ---
-    // No explicit tail handling needed here, loop condition ensures correctness.
-
-    return count; // Return total line count or match count
-}
-#endif // KREP_USE_NEON
 
 // --- Search Orchestration ---
 
-// Specialized search for short patterns (2-3 chars) using memchr + verification
-uint64_t memchr_short_search(const search_params_t *params,
-                             const char *text_start,
-                             size_t text_len,
-                             match_result_t *result)
-{
-    uint64_t count = 0;
-    const unsigned char *pattern = (const unsigned char *)params->pattern;
-    size_t pattern_len = params->pattern_len;
-    bool case_sensitive = params->case_sensitive;
-    bool count_lines_mode = params->count_lines_mode;
-    bool track_positions = params->track_positions;
-
-    // We only handle very short patterns (2-3 chars)
-    if (pattern_len < 2 || pattern_len > 3 || text_len < pattern_len)
-        return boyer_moore_search(params, text_start, text_len, result);
-
-    const unsigned char first_char = pattern[0];
-    const unsigned char second_char = pattern[1];
-    const unsigned char third_char = (pattern_len > 2) ? pattern[2] : 0;
-
-    // Prepare case-insensitive alternates for the pattern characters
-    unsigned char first_char_alt = 0;
-    unsigned char second_char_alt = 0;
-    unsigned char third_char_alt = 0;
-
-    if (!case_sensitive)
-    {
-        // Compute alternate case of each character
-        first_char_alt = islower(first_char) ? toupper(first_char) : tolower(first_char);
-        second_char_alt = islower(second_char) ? toupper(second_char) : tolower(second_char);
-        if (pattern_len > 2)
-        {
-            third_char_alt = islower(third_char) ? toupper(third_char) : tolower(third_char);
-        }
-    }
-
-// Special batched buffer to reduce malloc overhead when tracking positions
-#define LOCAL_BUFFER_SIZE 8192
-    match_position_t local_buffer[LOCAL_BUFFER_SIZE];
-    size_t buffer_count = 0;
-
-    size_t last_counted_line_start = SIZE_MAX;
-    size_t pos = 0;
-
-    // Fast search loop leveraging memchr for first character
-    while (pos <= text_len - pattern_len)
-    {
-        const char *found;
-
-        // Use platform-optimized memchr for first character
-        found = memchr(text_start + pos, first_char, text_len - pos - pattern_len + 1);
-
-        // Handle case insensitive - check alternate case if first search fails
-        if (!case_sensitive && !found && first_char_alt != first_char)
-        {
-            found = memchr(text_start + pos, first_char_alt, text_len - pos - pattern_len + 1);
-        }
-
-        if (!found)
-            break;
-
-        // Calculate absolute position of potential match
-        size_t match_pos = found - text_start;
-
-        // Fast verification of remaining characters
-        bool match = false;
-        if (case_sensitive)
-        {
-            // Case-sensitive comparison
-            if (pattern_len == 2)
-            {
-                match = (text_start[match_pos + 1] == second_char);
-            }
-            else
-            { // pattern_len == 3
-                match = (text_start[match_pos + 1] == second_char &&
-                         text_start[match_pos + 2] == third_char);
-            }
-        }
-        else
-        {
-            // Case-insensitive comparison
-            unsigned char s2 = (unsigned char)text_start[match_pos + 1];
-            if (pattern_len == 2)
-            {
-                match = (s2 == second_char || s2 == second_char_alt);
-            }
-            else
-            { // pattern_len == 3
-                unsigned char s3 = (unsigned char)text_start[match_pos + 2];
-                match = ((s2 == second_char || s2 == second_char_alt) &&
-                         (s3 == third_char || s3 == third_char_alt));
-            }
-        }
-
-        if (match)
-        {
-            // Match found at match_pos
-            if (count_lines_mode)
-            {
-                size_t line_start = find_line_start(text_start, text_len, match_pos);
-                if (line_start != last_counted_line_start)
-                {
-                    count++;
-                    last_counted_line_start = line_start;
-                    // Skip to end of line when counting lines
-                    size_t line_end = find_line_end(text_start, text_len, line_start);
-                    pos = (line_end < text_len) ? line_end + 1 : text_len;
-                }
-                else
-                {
-                    pos = match_pos + 1;
-                }
-            }
-            else
-            {
-                count++;
-                if (track_positions && result)
-                {
-                    if (buffer_count < LOCAL_BUFFER_SIZE)
-                    {
-                        // Store in local buffer
-                        local_buffer[buffer_count].start_offset = match_pos;
-                        local_buffer[buffer_count].end_offset = match_pos + pattern_len;
-                        buffer_count++;
-                    }
-                    else
-                    {
-                        // Flush buffer to result
-                        for (size_t i = 0; i < buffer_count; i++)
-                        {
-                            match_result_add(result, local_buffer[i].start_offset,
-                                             local_buffer[i].end_offset);
-                        }
-                        buffer_count = 0;
-                        // Add current match to buffer
-                        local_buffer[buffer_count].start_offset = match_pos;
-                        local_buffer[buffer_count].end_offset = match_pos + pattern_len;
-                        buffer_count++;
-                    }
-                }
-                pos = match_pos + (only_matching ? pattern_len : 1);
-            }
-        }
-        else
-        {
-            // No match, continue from the next position
-            pos = match_pos + 1;
-        }
-    }
-
-    // Flush any remaining buffer entries
-    if (track_positions && result && buffer_count > 0)
-    {
-        for (size_t i = 0; i < buffer_count; i++)
-        {
-            match_result_add(result, local_buffer[i].start_offset,
-                             local_buffer[i].end_offset);
-        }
-    }
-
-    return count;
-}
-
-// Update the select_search_algorithm function to use our specialized function for short patterns
 search_func_t select_search_algorithm(const search_params_t *params)
 {
     // Use regex search if requested
@@ -2729,6 +1916,18 @@ int search_string(const search_params_t *params, const char *text)
 
     // Determine final result based on matches found
     bool match_found = false;
+    size_t max_count = current_params.max_count; // Get max_count
+
+    // Adjust final_count based on max_count if necessary
+    if (max_count != SIZE_MAX && final_count > max_count)
+    {
+        final_count = max_count;
+    }
+    // Adjust matches->count if tracking positions
+    if (matches && max_count != SIZE_MAX && matches->count > max_count)
+    {
+        matches->count = max_count;
+    }
 
     if (current_params.count_lines_mode || current_params.count_matches_mode)
     {
@@ -2757,7 +1956,7 @@ int search_string(const search_params_t *params, const char *text)
         if (result_code == 0 && matches)
         {
             // No need to sort for string search (single thread)
-            print_matching_items(NULL, text, text_len, matches);
+            print_matching_items(NULL, text, text_len, matches, &current_params); // Pass params
         }
         // Handle case where match was found but no positions recorded (e.g., empty regex match)
         else if (result_code == 0 && (!matches || matches->count == 0))
@@ -2815,19 +2014,20 @@ static void KREP_UNUSED cleanup_global_thread_pool()
 
 int search_file(const search_params_t *params, const char *filename, int requested_thread_count)
 {
-    search_params_t current_params = *params; // Make a mutable copy we can modify
-    int result_code = 1;                      // Default: no match found
-    int fd = -1;                              // File descriptor
-    struct stat file_stat;                    // File stats
-    size_t file_size = 0;                     // File size
-    char *file_data = MAP_FAILED;             // Mapped file data
-    match_result_t *global_matches = NULL;    // Global result collection
-    pthread_t *threads = NULL;                // Thread handles
-    thread_data_t *thread_args = NULL;        // Thread arguments
-    regex_t compiled_regex_local;             // For local regex compilation
-    char *combined_regex_pattern = NULL;      // For combined regex patterns
-    int actual_thread_count = 0;              // Number of threads to actually use
-    uint64_t final_count = 0;                 // Total count of lines or matches
+    search_params_t current_params = *params;    // Make a mutable copy we can modify
+    int result_code = 1;                         // Default: no match found
+    int fd = -1;                                 // File descriptor
+    struct stat file_stat;                       // File stats
+    size_t file_size = 0;                        // File size
+    char *file_data = MAP_FAILED;                // Mapped file data
+    match_result_t *global_matches = NULL;       // Global result collection
+    pthread_t *threads = NULL;                   // Thread handles
+    thread_data_t *thread_args = NULL;           // Thread arguments
+    regex_t compiled_regex_local;                // For local regex compilation
+    char *combined_regex_pattern = NULL;         // For combined regex patterns
+    int actual_thread_count = 0;                 // Number of threads to actually use
+    uint64_t final_count = 0;                    // Total count of lines or matches
+    size_t max_count = current_params.max_count; // Get max_count
 
     // Rest of the function remains the same...
 
@@ -3014,7 +2214,8 @@ int search_file(const search_params_t *params, const char *filename, int request
                 printf("%s:\n", filename); // Empty line
             }
             atomic_store(&global_match_found_flag, true); // Signal match found for -r
-            return 0;                                     // Match found
+            // Check max_count for empty match
+            return (max_count != SIZE_MAX && 1 >= max_count) ? 0 : 0; // Return 0 if limit allows at least 1
         }
         else
         {
@@ -3323,79 +2524,90 @@ int search_file(const search_params_t *params, const char *filename, int request
         if (result_code != 2 && !merge_error)
         {
             // Sum counts (lines or matches). Note: Line count might be slightly off at boundaries.
-            final_count += thread_args[i].count_result;
-
-            // Merge position results if tracking
-            if (current_params.track_positions && thread_args[i].local_result)
+            uint64_t thread_count = thread_args[i].count_result;
+            if (max_count != SIZE_MAX)
             {
-                size_t chunk_offset = thread_args[i].chunk_start - file_data;
-                if (!match_result_merge(global_matches, thread_args[i].local_result, chunk_offset))
+                uint64_t remaining_limit = (final_count >= max_count) ? 0 : max_count - final_count;
+                if (thread_count > remaining_limit)
                 {
-                    fprintf(stderr, "krep: Error merging results from thread %d for %s.\n", i, filename);
-                    result_code = 2;
-                    merge_error = true;
+                    thread_count = remaining_limit; // Cap thread count contribution
                 }
             }
+            final_count += thread_count;
+
+            // Merge position results if tracking, respecting max_count
+            if (current_params.track_positions && global_matches && thread_args[i].local_result)
+            {
+                if (max_count == SIZE_MAX || global_matches->count < max_count)
+                {
+                    uint64_t remaining_limit = (max_count == SIZE_MAX) ? SIZE_MAX : max_count - global_matches->count;
+                    uint64_t merge_count = 0;
+                    for (uint64_t j = 0; j < thread_args[i].local_result->count && merge_count < remaining_limit; ++j)
+                    {
+                        // Adjust offsets based on the original chunk start (relative to file_data)
+                        size_t chunk_offset = thread_args[i].chunk_start - file_data;
+                        if (match_result_add(global_matches,
+                                             thread_args[i].local_result->positions[j].start_offset + chunk_offset,
+                                             thread_args[i].local_result->positions[j].end_offset + chunk_offset))
+                        {
+                            merge_count++;
+                        }
+                        else
+                        {
+                            fprintf(stderr, "krep: %s: Failed to merge match result from thread %d.\n", filename, i);
+                            merge_error = true;
+                            break; // Stop merging for this thread on error
+                        }
+                    }
+                }
+                match_result_free(thread_args[i].local_result); // Free local result after merging
+                thread_args[i].local_result = NULL;
+            }
+            else if (thread_args[i].local_result)
+            {
+                // Free local result if not merged (e.g., limit reached or not tracking)
+                match_result_free(thread_args[i].local_result);
+                thread_args[i].local_result = NULL;
+            }
+
+            if (merge_error)
+            {
+                result_code = 2;
+                // Continue cleanup but don't process further results
+            }
         }
-        match_result_free(thread_args[i].local_result); // Free local result regardless
-        thread_args[i].local_result = NULL;
     }
 
     // --- Final Processing and Output ---
     if (result_code != 2)
     {
-        bool match_found_bool = false;
+        // Determine final result code based on aggregated count/matches
+        result_code = (final_count > 0) ? 0 : 1;
+        if (result_code == 0)
+            atomic_store(&global_match_found_flag, true); // Signal match found for -r
+
         if (current_params.count_lines_mode || current_params.count_matches_mode)
         {
-            match_found_bool = (final_count > 0);
-        }
-        else
-        { // track_positions was true
-            match_found_bool = (global_matches && global_matches->count > 0);
-            if (match_found_bool)
-                final_count = global_matches->count; // Update count for summary
-        }
-        result_code = match_found_bool ? 0 : 1;
-
-        if (result_code == 0)
-        {
-            atomic_store(&global_match_found_flag, true);
-        }
-
-        size_t items_printed_count KREP_UNUSED = 0; // Mark as unused with macro
-
-        // --- Print Final Result ---
-        if (current_params.count_lines_mode || current_params.count_matches_mode) // -c or -co
-        {
-            // Only print count if > 0 for -c? No, grep prints "filename:0".
             printf("%s:%" PRIu64 "\n", filename, final_count);
         }
-        else // default or -o mode
+        else if (result_code == 0 && global_matches)
         {
-            if (result_code == 0 && global_matches)
+            // Sort matches by start offset before printing if needed (optional, but good practice)
+            qsort(global_matches->positions, global_matches->count, sizeof(match_position_t), compare_match_positions);
+
+            // Print matching lines/parts, respecting max_count via print_matching_items
+            print_matching_items(filename, file_data, file_size, global_matches, &current_params); // Pass params
+        }
+        // Handle case where match was found but no positions recorded (e.g., empty regex match)
+        else if (result_code == 0 && (!global_matches || global_matches->count == 0))
+        {
+            if (only_matching)
             {
-                // Sort aggregated matches before printing
-                qsort(global_matches->positions, global_matches->count, sizeof(match_position_t), compare_match_positions);
-                items_printed_count = print_matching_items(filename, file_data, file_size, global_matches);
-                // If print returned 0 but matches existed (e.g. empty regex match handled poorly)
-                if (items_printed_count == 0 && global_matches->count > 0 && result_code == 0)
-                {
-                    // Print at least the filename for empty matches
-                    if (only_matching)
-                        printf("%s:1:\n", filename); // Line 1, empty match
-                    else
-                        printf("%s:\n", filename);
-                    items_printed_count = 1; // Count it as one item printed
-                }
+                printf("%s:1:\n", filename); // Line number 1, empty match
             }
-            // Handle case where match found (e.g., empty regex) but no positions recorded
-            else if (result_code == 0 && (!global_matches || global_matches->count == 0))
+            else
             {
-                if (only_matching)
-                    printf("%s:1:\n", filename); // Line 1, empty match
-                else
-                    printf("%s:\n", filename);
-                items_printed_count = 1;
+                printf("%s:\n", filename); // Empty line
             }
         }
     }
@@ -3596,6 +2808,9 @@ int main(int argc, char *argv[])
     size_t pattern_lens[MAX_PATTERN_LENGTH];
     size_t num_patterns_found = 0;
 
+    // Add an array to track which patterns were dynamically allocated and need to be freed
+    bool pattern_needs_free[MAX_PATTERN_LENGTH] = {false};
+
     char *target_arg = NULL;                 // The file, directory, or string to search
     bool count_only_flag = false;            // Flag for -c
     bool string_mode = false;                // Flag for -s (search string instead of file)
@@ -3605,18 +2820,22 @@ int main(int argc, char *argv[])
 
     // --- getopt_long Setup ---
     struct option long_options[] = {
-        {"color", optional_argument, 0, 'C'},   // --color[=WHEN]
-        {"no-simd", no_argument, 0, 'S'},       // --no-simd
-        {"help", no_argument, 0, 'h'},          // --help
-        {"version", no_argument, 0, 'v'},       // --version
-        {"fixed-strings", no_argument, 0, 'F'}, // --fixed-strings, same as default
-        {"regexp", required_argument, 0, 'e'},  // Treat -e as --regexp for consistency
-        {0, 0, 0, 0}};                          // Terminator
+        {"color", optional_argument, 0, 'C'},     // --color[=WHEN]
+        {"no-simd", no_argument, 0, 'S'},         // --no-simd
+        {"help", no_argument, 0, 'h'},            // --help
+        {"version", no_argument, 0, 'v'},         // --version
+        {"fixed-strings", no_argument, 0, 'F'},   // --fixed-strings, same as default
+        {"regexp", required_argument, 0, 'e'},    // Treat -e as --regexp for consistency
+        {"max-count", required_argument, 0, 'm'}, // --max-count=NUM option
+        {0, 0, 0, 0}};                            // Terminator
     int option_index = 0;
     int opt;
 
+    // Initialize max_count to SIZE_MAX (no limit)
+    params.max_count = SIZE_MAX;
+
     // --- Parse Command Line Options ---
-    while ((opt = getopt_long(argc, argv, "icodEFrt:shve:", long_options, &option_index)) != -1)
+    while ((opt = getopt_long(argc, argv, "+e:f:icm:oEFrt:s:vh", long_options, &option_index)) != -1)
     {
         switch (opt)
         {
@@ -3626,10 +2845,25 @@ int main(int argc, char *argv[])
         case 'c': // Count lines
             count_only_flag = true;
             break;
-        case 'o':                    // Only matching parts
-            only_matching = true;    // Set global flag
-            count_only_flag = false; // -o overrides -c in this implementation
+        case 'o': // Only matching parts
+            only_matching = true;
             break;
+        case 'm': // Max count
+        {
+            char *endptr = NULL;
+            errno = 0;
+            long val = strtol(optarg, &endptr, 10);
+            if (errno != 0 || optarg == endptr || *endptr != '\0' || val < 0)
+            {
+                fprintf(stderr, "krep: Warning: Invalid number for max-count '%s'\n", optarg);
+            }
+            else
+            {
+                // Cast to size_t (always less than SIZE_MAX since we've verified val >= 0)
+                params.max_count = (size_t)val;
+            }
+        }
+        break;
         case 'E': // Use Extended Regex
             params.use_regex = true;
             break;
@@ -3657,7 +2891,52 @@ int main(int argc, char *argv[])
         break;
         case 's': // Search string mode
             string_mode = true;
+            target_arg = optarg;
             break;
+        case 'f': // Read patterns from file
+        {
+            FILE *pattern_file = fopen(optarg, "r");
+            if (!pattern_file)
+            {
+                fprintf(stderr, "krep: Error: Cannot open pattern file: %s\n", optarg);
+                return 2;
+            }
+
+            char line[MAX_PATTERN_LENGTH];
+            while (fgets(line, sizeof(line), pattern_file) && num_patterns_found < MAX_PATTERN_LENGTH)
+            {
+                // Remove trailing newline if present
+                size_t len = strlen(line);
+                if (len > 0 && line[len - 1] == '\n')
+                    line[len - 1] = '\0';
+
+                // Skip empty lines
+                if (strlen(line) == 0)
+                    continue;
+
+                // Allocate storage for the pattern
+                pattern_args[num_patterns_found] = strdup(line);
+                if (!pattern_args[num_patterns_found])
+                {
+                    perror("krep: Error: Memory allocation failed for pattern");
+                    fclose(pattern_file);
+                    return 2;
+                }
+                pattern_lens[num_patterns_found] = strlen(pattern_args[num_patterns_found]);
+                // Mark this pattern as needing to be freed
+                pattern_needs_free[num_patterns_found] = true;
+                num_patterns_found++;
+            }
+            fclose(pattern_file);
+
+            if (num_patterns_found == 0)
+            {
+                fprintf(stderr, "krep: Error: No patterns found in file: %s\n", optarg);
+                return 2;
+            }
+            break;
+        }
+
         case 'v': // Version
             printf("krep v%s\n", VERSION);
 #if KREP_USE_AVX2
@@ -3679,13 +2958,17 @@ int main(int argc, char *argv[])
             {
                 pattern_args[num_patterns_found] = optarg;
                 pattern_lens[num_patterns_found] = strlen(optarg);
+                // These patterns come from argv, no need to free
+                pattern_needs_free[num_patterns_found] = false;
                 num_patterns_found++;
             }
             else
             {
-                fprintf(stderr, "krep: Warning: Too many patterns specified via -e (max %d), ignoring excess.\n", MAX_PATTERN_LENGTH);
+                fprintf(stderr, "krep: Error: Too many patterns specified (max %d)\n", MAX_PATTERN_LENGTH);
+                return 2;
             }
             break;
+
         case 'C': // --color option
             if (optarg == NULL || strcmp(optarg, "auto") == 0)
                 color_when = "auto";
@@ -3722,17 +3005,19 @@ int main(int argc, char *argv[])
 
     // Get pattern argument(s)
     if (num_patterns_found == 0)
-    { // No patterns from -e
+    { // No patterns from -e or -f
         if (optind >= argc)
         {
-            fprintf(stderr, "krep: Error: PATTERN argument missing.\n");
+            fprintf(stderr, "krep: Error: No pattern specified.\n");
             print_usage(argv[0]);
             return 2;
         }
         pattern_args[0] = argv[optind++]; // Consume the pattern argument
         pattern_lens[0] = strlen(pattern_args[0]);
+        pattern_needs_free[0] = false; // Pattern from argv, no need to free
         num_patterns_found = 1;
     }
+
     // Assign patterns to params struct
     params.patterns = (const char **)pattern_args; // Cast is safe as we won't modify argv content
     params.pattern_lens = pattern_lens;
@@ -3856,6 +3141,18 @@ int main(int argc, char *argv[])
     // Clean up thread pool before exiting
     cleanup_global_thread_pool();
 
+    // Cleanup before exit - free any memory allocated for patterns read from file
+    if (num_patterns_found > 0)
+    {
+        for (size_t i = 0; i < num_patterns_found; i++)
+        {
+            if (pattern_needs_free[i] && pattern_args[i])
+            {
+                free(pattern_args[i]);
+            }
+        }
+    }
+
     // Return the final exit code (0=match, 1=no match, 2=error)
     return exit_code;
 }
@@ -3867,11 +3164,17 @@ uint64_t memchr_search(const search_params_t *params,
                        size_t text_len,
                        match_result_t *result)
 {
-    uint64_t count = 0;
+    // --- Add max_count == 0 check ---
+    if (params->max_count == 0)
+        return 0;
+    // --- End add ---
+
+    uint64_t current_count = 0;             // Use local counter for limit check
     const char target = params->pattern[0]; // Single byte pattern
     const char target_case = params->case_sensitive ? 0 : (islower(target) ? toupper(target) : tolower(target));
     bool count_lines_mode = params->count_lines_mode;
     bool track_positions = params->track_positions;
+    size_t max_count = params->max_count; // Get max_count
 
 // Special batched buffer for matches to reduce malloc overhead
 #define MEMCHR_BUFFER_SIZE 4096
@@ -3907,8 +3210,16 @@ uint64_t memchr_search(const search_params_t *params,
             size_t line_start = find_line_start(text_start, text_len, match_pos);
             if (line_start != last_counted_line_start)
             {
-                count++;
+                // --- Check max_count BEFORE incrementing ---
+                if (max_count != SIZE_MAX && current_count >= max_count)
+                {
+                    break; // Limit reached
+                }
+                // --- End check ---
+
+                current_count++; // Increment line count
                 last_counted_line_start = line_start;
+
                 // Optimize: skip to end of line
                 size_t line_end = find_line_end(text_start, text_len, line_start);
                 pos = (line_end < text_len) ? line_end + 1 : text_len;
@@ -3920,7 +3231,34 @@ uint64_t memchr_search(const search_params_t *params,
         }
         else
         {
-            count++;
+            // --- Check max_count BEFORE incrementing ---
+            if (max_count != SIZE_MAX && current_count >= max_count)
+            {
+                if (track_positions && result) // Add final match to buffer/result
+                {
+                    if (buffer_count < MEMCHR_BUFFER_SIZE)
+                    {
+                        local_buffer[buffer_count].start_offset = match_pos;
+                        local_buffer[buffer_count].end_offset = match_pos + 1;
+                        buffer_count++;
+                    }
+                    else
+                    { // Flush buffer first
+                        for (size_t i = 0; i < buffer_count; i++)
+                        {
+                            match_result_add(result, local_buffer[i].start_offset, local_buffer[i].end_offset);
+                        }
+                        buffer_count = 0;
+                        // Add final match directly
+                        match_result_add(result, match_pos, match_pos + 1);
+                    }
+                }
+                break; // Limit reached
+            }
+            // --- End check ---
+
+            current_count++; // Increment match count
+
             if (track_positions && result)
             {
                 if (buffer_count < MEMCHR_BUFFER_SIZE)
@@ -3952,14 +3290,19 @@ uint64_t memchr_search(const search_params_t *params,
     // Flush any remaining buffer entries
     if (track_positions && result && buffer_count > 0)
     {
-        for (size_t i = 0; i < buffer_count; i++)
+        // Respect max_count when flushing remaining buffer
+        uint64_t already_added = result->count;
+        uint64_t can_add_more = (max_count == SIZE_MAX) ? buffer_count : ((already_added >= max_count) ? 0 : max_count - already_added);
+        size_t flush_limit = (buffer_count < can_add_more) ? buffer_count : can_add_more;
+
+        for (size_t i = 0; i < flush_limit; i++)
         {
             match_result_add(result, local_buffer[i].start_offset,
                              local_buffer[i].end_offset);
         }
     }
 
-    return count;
+    return current_count; // Return line count or match count
 }
 
 // --- Thread Pool Implementation ---
@@ -4205,3 +3548,132 @@ void thread_pool_destroy(thread_pool_t *pool)
     free(pool->threads);
     free(pool);
 }
+
+// --- memchr-based search for short patterns (2-3 chars) ---
+uint64_t memchr_short_search(const search_params_t *params,
+                             const char *text_start,
+                             size_t text_len,
+                             match_result_t *result)
+{
+    if (params->max_count == 0 && (params->count_lines_mode || params->track_positions))
+        return 0;
+
+    uint64_t current_count = 0;
+    size_t pattern_len = params->pattern_len;
+    const unsigned char *search_pattern = (const unsigned char *)params->pattern;
+    bool case_sensitive = params->case_sensitive;
+    bool count_lines_mode = params->count_lines_mode;
+    bool track_positions = params->track_positions;
+    size_t max_count = params->max_count;
+
+    if (pattern_len < 2 || pattern_len > 3 || text_len < pattern_len)
+        return 0;
+
+    const char *current_pos = text_start;
+    size_t remaining_len = text_len;
+    size_t last_counted_line_start = SIZE_MAX;
+    unsigned char first_char = search_pattern[0];
+    unsigned char first_char_lower = case_sensitive ? 0 : lower_table[first_char];
+
+    while (remaining_len >= pattern_len)
+    {
+        const char *potential_match = NULL;
+        if (case_sensitive)
+        {
+            potential_match = memchr(current_pos, first_char, remaining_len - pattern_len + 1);
+        }
+        else
+        {
+            const unsigned char *scan = (const unsigned char *)current_pos;
+            for (size_t k = 0; k <= remaining_len - pattern_len; ++k)
+            {
+                if (lower_table[scan[k]] == first_char_lower)
+                {
+                    potential_match = (const char *)(scan + k);
+                    break;
+                }
+            }
+        }
+
+        if (potential_match == NULL)
+        {
+            break;
+        }
+
+        bool full_match = false;
+        if (case_sensitive)
+        {
+            if (memcmp(potential_match + 1, search_pattern + 1, pattern_len - 1) == 0)
+            {
+                full_match = true;
+            }
+        }
+        else
+        {
+            if (memory_equals_case_insensitive((const unsigned char *)potential_match + 1, search_pattern + 1, pattern_len - 1))
+            {
+                full_match = true;
+            }
+        }
+
+        if (full_match)
+        {
+            size_t match_start_offset = potential_match - text_start;
+            bool count_incremented_this_match = false;
+
+            if (count_lines_mode)
+            {
+                size_t line_start = find_line_start(text_start, text_len, match_start_offset);
+                if (line_start != last_counted_line_start)
+                {
+                    current_count++;
+                    last_counted_line_start = line_start;
+                    count_incremented_this_match = true;
+                }
+            }
+            else
+            {
+                current_count++;
+                count_incremented_this_match = true;
+                if (track_positions && result)
+                {
+                    if (current_count <= max_count)
+                    {
+                        if (!match_result_add(result, match_start_offset, match_start_offset + pattern_len))
+                        {
+                            fprintf(stderr, "Warning: Failed to add short match position.\n");
+                        }
+                    }
+                }
+            }
+
+            if (count_incremented_this_match && current_count >= max_count)
+            {
+                break;
+            }
+        }
+
+        size_t advance = (potential_match - current_pos) + 1;
+        if (advance > remaining_len)
+            break;
+        current_pos += advance;
+        remaining_len -= advance;
+    }
+
+    return current_count;
+}
+
+#ifdef __ARM_NEON
+uint64_t neon_search(const search_params_t *params,
+                     const char *text_start,
+                     size_t text_len,
+                     match_result_t *result)
+{
+    if (params->pattern_len > 16 || !params->case_sensitive)
+    {
+        return boyer_moore_search(params, text_start, text_len, result);
+    }
+
+    return boyer_moore_search(params, text_start, text_len, result);
+}
+#endif

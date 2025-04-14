@@ -10,383 +10,348 @@
 #include <stdbool.h>
 #include <ctype.h> // Add this for tolower()
 #include "krep.h"
+#include "aho_corasick.h"
 
-// Traditional implementation uses a full 256-pointer array for every node:
-//   struct ac_node { struct ac_node *children[256]; ... }
-// Which consumes 2KB per node on 64-bit systems.
-//
-// The optimized implementation uses a sparse representation with dynamic allocation:
-
-// Maximum number of edges we expect per node (tunable)
-#define AC_DEFAULT_CAPACITY 8
-
-typedef struct ac_node_sparse
+// Aho-Corasick node structure
+typedef struct ac_node
 {
-    // Sparse representation: only store used character transitions
-    unsigned char *chars;         // Characters with transitions
-    struct ac_node_sparse **next; // Corresponding next nodes
-    size_t edge_count;            // Number of edges from this node
-    size_t capacity;              // Current allocation size
+    struct ac_node *children[256]; // One child per possible character
+    struct ac_node *failure;       // Failure link (used for jumping when character not found)
+    int *output_indices;           // Indices of patterns ending at this node
+    int num_outputs;               // Number of pattern indices
+    int capacity;                  // Allocated capacity for outputs
+} ac_node_t;
 
-    // Pattern matching info
-    int pattern_index;           // Index of matched pattern (-1 if not a match)
-    struct ac_node_sparse *fail; // Failure link
-} ac_node_sparse_t;
-
-// Root of the trie
-typedef struct
+// Aho-Corasick trie structure
+struct ac_trie
 {
-    ac_node_sparse_t *root;
-    size_t pattern_count;
-} ac_automaton_t;
+    ac_node_t *root;     // Root node of the trie
+    size_t num_patterns; // Number of patterns in the trie
+    bool case_sensitive; // Whether search is case-sensitive
+};
 
-// Create a new node
-static ac_node_sparse_t *ac_create_node(void)
+// Create a new AC node
+static ac_node_t *ac_node_create()
 {
-    ac_node_sparse_t *node = calloc(1, sizeof(ac_node_sparse_t));
+    ac_node_t *node = calloc(1, sizeof(ac_node_t));
     if (!node)
     {
-        perror("Error allocating AC node");
+        perror("Failed to allocate memory for Aho-Corasick node");
         return NULL;
     }
+    // Initialize children array to NULL
+    memset(node->children, 0, sizeof(node->children));
 
-    // Start with a small capacity that grows as needed
-    node->capacity = AC_DEFAULT_CAPACITY;
-    node->chars = malloc(node->capacity * sizeof(unsigned char));
-    node->next = malloc(node->capacity * sizeof(ac_node_sparse_t *));
-
-    if (!node->chars || !node->next)
-    {
-        perror("Error allocating AC node arrays");
-        free(node->chars);
-        free(node->next);
-        free(node);
-        return NULL;
-    }
-
-    node->edge_count = 0;
-    node->pattern_index = -1;
-    node->fail = NULL;
+    // Initialize output_indices as NULL (allocated later if needed)
+    node->output_indices = NULL;
+    node->num_outputs = 0;
+    node->capacity = 0;
+    node->failure = NULL;
 
     return node;
 }
 
-// Find child node for a given character, or NULL if not found
-static ac_node_sparse_t *ac_find_child(ac_node_sparse_t *node, unsigned char c)
+// Add pattern index to node outputs
+static bool ac_node_add_output(ac_node_t *node, int pattern_index)
 {
-    for (size_t i = 0; i < node->edge_count; i++)
+    if (!node)
+        return false;
+
+    // Check if we need to allocate or resize
+    if (node->num_outputs >= node->capacity)
     {
-        if (node->chars[i] == c)
+        int new_capacity = node->capacity == 0 ? 4 : node->capacity * 2;
+        int *new_outputs = realloc(node->output_indices, new_capacity * sizeof(int));
+        if (!new_outputs)
         {
-            return node->next[i];
+            perror("Failed to resize Aho-Corasick node outputs");
+            return false;
         }
-    }
-    return NULL;
-}
-
-// Add a child node for the given character
-static ac_node_sparse_t *ac_add_child(ac_node_sparse_t *node, unsigned char c)
-{
-    // Check if we need to resize
-    if (node->edge_count >= node->capacity)
-    {
-        size_t new_capacity = node->capacity * 2;
-        unsigned char *new_chars = realloc(node->chars, new_capacity * sizeof(unsigned char));
-        ac_node_sparse_t **new_next = realloc(node->next, new_capacity * sizeof(ac_node_sparse_t *));
-
-        if (!new_chars || !new_next)
-        {
-            perror("Error expanding AC node");
-            free(new_chars); // Safe to call with NULL
-            free(new_next);  // Safe to call with NULL
-            return NULL;
-        }
-
-        node->chars = new_chars;
-        node->next = new_next;
+        node->output_indices = new_outputs;
         node->capacity = new_capacity;
     }
 
-    // Create the new node
-    ac_node_sparse_t *child = ac_create_node();
-    if (!child)
-    {
-        return NULL;
-    }
-
-    // Add to the sparse arrays
-    node->chars[node->edge_count] = c;
-    node->next[node->edge_count] = child;
-    node->edge_count++;
-
-    return child;
-}
-
-// Initialize the automaton
-static ac_automaton_t *ac_create(void)
-{
-    ac_automaton_t *ac = malloc(sizeof(ac_automaton_t));
-    if (!ac)
-    {
-        perror("Error allocating AC automaton");
-        return NULL;
-    }
-
-    ac->root = ac_create_node();
-    if (!ac->root)
-    {
-        free(ac);
-        return NULL;
-    }
-
-    ac->pattern_count = 0;
-    return ac;
-}
-
-// Add a pattern to the trie
-static bool ac_add_pattern(ac_automaton_t *ac, const char *pattern, size_t pattern_len, int pattern_idx, bool case_sensitive)
-{
-    if (!ac || !pattern)
-        return false;
-
-    ac_node_sparse_t *current = ac->root;
-
-    for (size_t i = 0; i < pattern_len; i++)
-    {
-        unsigned char c = (unsigned char)pattern[i];
-        if (!case_sensitive)
-        {
-            c = tolower(c);
-        }
-
-        ac_node_sparse_t *next = ac_find_child(current, c);
-        if (!next)
-        {
-            next = ac_add_child(current, c);
-            if (!next)
-            {
-                return false; // Failed to add child
-            }
-        }
-        current = next;
-    }
-
-    // Mark the node as a match point
-    current->pattern_index = pattern_idx;
-    ac->pattern_count++;
-
+    // Add the pattern index
+    node->output_indices[node->num_outputs++] = pattern_index;
     return true;
 }
 
-// Build the failure function using BFS
-static bool ac_build_failure_links(ac_automaton_t *ac, bool case_sensitive KREP_UNUSED)
+// Free an AC node and all its children recursively
+static void ac_node_free(ac_node_t *node)
 {
-    if (!ac || !ac->root)
-        return false;
-
-    // Initialize a queue for BFS
-    ac_node_sparse_t **queue = malloc(10000 * sizeof(ac_node_sparse_t *)); // Adjust size as needed
-    if (!queue)
-    {
-        perror("Failed to allocate BFS queue");
-        return false;
-    }
-
-    size_t front = 0, rear = 0;
-
-    // For depth 1 nodes, set failure to root
-    for (size_t i = 0; i < ac->root->edge_count; i++)
-    {
-        ac_node_sparse_t *child = ac->root->next[i];
-        child->fail = ac->root;
-        queue[rear++] = child; // Enqueue child
-    }
-
-    // BFS to set failure links for remaining nodes
-    while (front < rear)
-    {
-        ac_node_sparse_t *current = queue[front++];
-
-        for (size_t i = 0; i < current->edge_count; i++)
-        {
-            unsigned char c = current->chars[i];
-            ac_node_sparse_t *child = current->next[i];
-
-            queue[rear++] = child; // Enqueue child
-
-            // Find failure link for child
-            ac_node_sparse_t *fail = current->fail;
-            while (fail != ac->root && !ac_find_child(fail, c))
-            {
-                fail = fail->fail;
-            }
-
-            ac_node_sparse_t *fail_child = ac_find_child(fail, c);
-            child->fail = fail_child ? fail_child : ac->root;
-        }
-    }
-
-    free(queue);
-    return true;
-}
-
-// Free the automaton
-static void ac_free(ac_automaton_t *ac)
-{
-    if (!ac)
+    if (!node)
         return;
 
-    // Use BFS to free all nodes
-    ac_node_sparse_t **queue = malloc(10000 * sizeof(ac_node_sparse_t *)); // Adjust size as needed
-    if (!queue)
+    // Recursively free children
+    for (int i = 0; i < 256; i++)
     {
-        perror("Failed to allocate free queue");
-        return; // Memory leak, but better than crashing
-    }
-
-    size_t front = 0, rear = 0;
-    queue[rear++] = ac->root;
-
-    while (front < rear)
-    {
-        ac_node_sparse_t *current = queue[front++];
-
-        // Queue all children
-        for (size_t i = 0; i < current->edge_count; i++)
+        if (node->children[i])
         {
-            if (current->next[i])
-            {
-                queue[rear++] = current->next[i];
-            }
+            ac_node_free(node->children[i]);
         }
-
-        // Free this node
-        free(current->chars);
-        free(current->next);
-        free(current);
     }
 
-    free(queue);
-    free(ac);
+    // Free outputs array if allocated
+    if (node->output_indices)
+    {
+        free(node->output_indices);
+    }
+
+    // Free the node itself
+    free(node);
 }
 
-// Declare the find_line functions that are used in this file
-// These are defined in krep.c but need to be accessible here
-extern size_t find_line_start(const char *text, size_t max_len, size_t pos);
-extern size_t find_line_end(const char *text, size_t text_len, size_t pos);
-
-// Search for patterns in text
-uint64_t aho_corasick_search(const search_params_t *params, const char *text_start, size_t text_len, match_result_t *result)
+// Build the Aho-Corasick Trie
+ac_trie_t *ac_trie_build(const search_params_t *params)
 {
-    if (!params || !text_start)
-        return 0;
-
-    uint64_t match_count = 0;
-    bool case_sensitive = params->case_sensitive;
-    bool count_lines_mode = params->count_lines_mode;
-    bool track_positions = params->track_positions;
-
-    // Build the automaton
-    ac_automaton_t *ac = ac_create();
-    if (!ac)
+    if (!params || params->num_patterns == 0)
     {
-        fprintf(stderr, "Failed to create Aho-Corasick automaton\n");
-        return 0;
+        return NULL;
     }
 
-    // Add all patterns to the trie
-    for (size_t i = 0; i < params->num_patterns; i++)
+    // Allocate the trie structure
+    ac_trie_t *trie = malloc(sizeof(ac_trie_t));
+    if (!trie)
     {
-        if (!ac_add_pattern(ac, params->patterns[i], params->pattern_lens[i], i, case_sensitive))
-        {
-            fprintf(stderr, "Failed to add pattern %zu to Aho-Corasick automaton\n", i);
-            ac_free(ac);
-            return 0;
-        }
+        perror("Failed to allocate Aho-Corasick trie");
+        return NULL;
     }
 
-    // Build failure links
-    if (!ac_build_failure_links(ac, case_sensitive))
+    // Create the root node
+    trie->root = ac_node_create();
+    if (!trie->root)
     {
-        fprintf(stderr, "Failed to build Aho-Corasick failure links\n");
-        ac_free(ac);
-        return 0;
+        free(trie);
+        return NULL;
     }
 
-    // Variables for line counting
-    size_t last_counted_line_start = SIZE_MAX;
+    trie->num_patterns = params->num_patterns;
+    trie->case_sensitive = params->case_sensitive;
 
-    // Search the text
-    ac_node_sparse_t *current = ac->root;
-    for (size_t i = 0; i < text_len; i++)
+    // Build the trie - Insert all patterns
+    for (size_t p = 0; p < params->num_patterns; p++)
     {
-        unsigned char c = (unsigned char)text_start[i];
-        if (!case_sensitive)
-        {
-            c = tolower(c);
-        }
+        const unsigned char *pattern = (const unsigned char *)params->patterns[p];
+        size_t pattern_len = params->pattern_lens[p];
 
-        // Follow failure links until we find a node with a transition on c
-        while (current != ac->root && !ac_find_child(current, c))
-        {
-            current = current->fail;
-        }
+        if (pattern_len == 0)
+            continue; // Skip empty patterns
 
-        // Find the next state
-        ac_node_sparse_t *next = ac_find_child(current, c);
-        current = next ? next : ac->root;
+        ac_node_t *current = trie->root;
 
-        // Check for matches
-        ac_node_sparse_t *temp = current;
-        while (temp != ac->root)
+        // Insert each character of the pattern
+        for (size_t i = 0; i < pattern_len; i++)
         {
-            if (temp->pattern_index != -1)
+            unsigned char c = params->case_sensitive ? pattern[i] : tolower(pattern[i]);
+
+            // Create child node if it doesn't exist
+            if (!current->children[c])
             {
-                // Found a match
-                int pattern_idx = temp->pattern_index;
-                size_t pattern_len = params->pattern_lens[pattern_idx];
-                size_t match_end = i + 1; // End position is exclusive
-                size_t match_start = match_end - pattern_len;
-
-                if (count_lines_mode)
+                current->children[c] = ac_node_create();
+                if (!current->children[c])
                 {
-                    // Count lines mode: Only count each line once
-                    size_t line_start = find_line_start(text_start, text_len, match_start);
-                    if (line_start != last_counted_line_start)
-                    {
-                        match_count++;
-                        last_counted_line_start = line_start;
+                    // Handle allocation failure
+                    ac_trie_free(trie);
+                    return NULL;
+                }
+            }
 
-                        // OPTIMIZATION: Jump to end of line
-                        size_t line_end = find_line_end(text_start, text_len, line_start);
-                        if (line_end < text_len)
-                        {
-                            i = line_end;
-                            current = ac->root; // Reset state
-                        }
-                        break; // Exit the inner while loop
+            // Advance to the child
+            current = current->children[c];
+        }
+
+        // Mark this node with the pattern index (used later for output)
+        ac_node_add_output(current, (int)p);
+    }
+
+    // Build failure links using BFS
+    // Queue for BFS traversal
+    ac_node_t **queue = malloc(trie->num_patterns * 256 * sizeof(ac_node_t *)); // Generous upper bound
+    if (!queue)
+    {
+        ac_trie_free(trie);
+        return NULL;
+    }
+
+    int queue_front = 0;
+    int queue_rear = 0;
+
+    // Set up the failure links for the first level (all point to root)
+    for (int c = 0; c < 256; c++)
+    {
+        if (trie->root->children[c])
+        {
+            trie->root->children[c]->failure = trie->root;
+            queue[queue_rear++] = trie->root->children[c]; // Add to queue
+        }
+    }
+
+    // BFS to build failure links
+    while (queue_front < queue_rear)
+    {
+        ac_node_t *current = queue[queue_front++]; // Dequeue
+
+        // Process each child of current node
+        for (int c = 0; c < 256; c++)
+        {
+            if (current->children[c])
+            {
+                ac_node_t *child = current->children[c];
+                queue[queue_rear++] = child; // Add to queue
+
+                // Find failure link for this child
+                ac_node_t *failure = current->failure;
+
+                // Keep following failure links until we find a node that has a child with the same character
+                while (failure != trie->root && !failure->children[c])
+                {
+                    failure = failure->failure;
+                }
+
+                // Set the failure link for the child
+                if (failure->children[c])
+                {
+                    child->failure = failure->children[c];
+
+                    // Copy outputs from failure node to this node
+                    for (int j = 0; j < child->failure->num_outputs; j++)
+                    {
+                        ac_node_add_output(child, child->failure->output_indices[j]);
                     }
                 }
                 else
                 {
-                    // Normal match counting
-                    match_count++;
+                    child->failure = trie->root;
+                }
+            }
+        }
+    }
 
-                    // Track positions if requested
+    free(queue);
+    return trie;
+}
+
+// Free the Aho-Corasick Trie
+void ac_trie_free(ac_trie_t *trie)
+{
+    if (!trie)
+        return;
+
+    // Free the root node and all its children
+    ac_node_free(trie->root);
+
+    // Free the trie structure
+    free(trie);
+}
+
+// Aho-Corasick search function
+uint64_t aho_corasick_search(const search_params_t *params,
+                             const char *text_start,
+                             size_t text_len,
+                             match_result_t *result)
+{
+    // Basic validation
+    if (!params || params->num_patterns == 0 || text_len == 0)
+    {
+        return 0;
+    }
+    if (params->max_count == 0 && (params->count_lines_mode || params->track_positions))
+    {
+        return 0;
+    }
+
+    // Build the trie
+    ac_trie_t *trie = ac_trie_build(params);
+    if (!trie)
+    {
+        return 0; // Failed to build trie
+    }
+
+    uint64_t current_count = 0;
+    bool count_lines_mode = params->count_lines_mode;
+    bool track_positions = params->track_positions;
+    size_t max_count = params->max_count;
+    size_t last_counted_line_start = SIZE_MAX;
+
+    // Search using the Aho-Corasick algorithm
+    ac_node_t *current = trie->root;
+    const unsigned char *text = (const unsigned char *)text_start;
+
+    for (size_t i = 0; i < text_len; i++)
+    {
+        unsigned char c = trie->case_sensitive ? text[i] : tolower(text[i]);
+
+        // Follow the trie nodes until we find a match for the current character
+        while (current != trie->root && !current->children[c])
+        {
+            current = current->failure;
+        }
+
+        // Move to the next state
+        if (current->children[c])
+        {
+            current = current->children[c];
+        }
+
+        // Check if the current node contains any pattern outputs
+        if (current->num_outputs > 0)
+        {
+            // Process each pattern that ends at this position
+            for (int j = 0; j < current->num_outputs; j++)
+            {
+                int pattern_idx = current->output_indices[j];
+                size_t pattern_len = params->pattern_lens[pattern_idx];
+
+                // Calculate the start position of the match
+                size_t match_start = i - pattern_len + 1;
+                size_t match_end = i + 1;
+
+                bool count_incremented_this_match = false;
+
+                if (count_lines_mode)
+                {
+                    // Find the start of the line containing the match
+                    size_t line_start = find_line_start(text_start, text_len, match_start);
+
+                    // Only count each line once
+                    if (line_start != last_counted_line_start)
+                    {
+                        current_count++;
+                        last_counted_line_start = line_start;
+                        count_incremented_this_match = true;
+                    }
+                }
+                else
+                {
+                    // Count all matches
+                    current_count++;
+                    count_incremented_this_match = true;
+
+                    // Add position to result if tracking
                     if (track_positions && result)
                     {
                         if (!match_result_add(result, match_start, match_end))
                         {
-                            fprintf(stderr, "Warning: Failed to add match position (Aho-Corasick)\n");
+                            fprintf(stderr, "Warning: Failed to add match position in Aho-Corasick.\n");
                         }
                     }
                 }
+
+                // Check if we've reached the max count
+                if (count_incremented_this_match && current_count >= max_count && max_count != SIZE_MAX)
+                {
+                    // Reached max_count, truncate the result if needed
+                    if (track_positions && result && result->count > max_count)
+                    {
+                        result->count = max_count;
+                    }
+                    ac_trie_free(trie);
+                    return current_count;
+                }
             }
-            temp = temp->fail;
         }
     }
 
-    // Cleanup
-    ac_free(ac);
-    return match_count;
+    ac_trie_free(trie);
+    return current_count;
 }

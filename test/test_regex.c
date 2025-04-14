@@ -270,38 +270,53 @@ void test_regex_overlapping(void)
 }
 
 /**
- * Test regex with report limit (using the compatibility wrapper)
+ * Test regex with max_count limit (using search_params_t)
  */
 void test_regex_report_limit(void)
 {
-    printf("\n=== Regex Report Limit Tests ===\n");
+    printf("\n=== Regex Max Count Limit Tests ===\n");
 
     // Create a text with multiple matches
     const char *text = "aaa bbb aaa ccc aaa ddd aaa"; // 4 "aaa" matches
     size_t text_len = strlen(text);
+    match_result_t *result = NULL; // Not needed for count checks
 
-    regex_t re = create_regex("aaa", true);
+    // Use helper to create params, then modify max_count
+    search_params_t params = create_regex_params("aaa", true, false, false);
 
-    // Test with different limits passed to the compatibility wrapper
-    // Note: The compatibility wrapper might not implement the limit correctly,
-    // but we test the interface. The underlying regex_search might ignore it.
-    // SIZE_MAX effectively means no limit.
-    uint64_t matches_full = regex_search_compat(text, text_len, &re, SIZE_MAX);
-    // Limit = 5: Should find the first "aaa" (ends at index 3).
-    uint64_t matches_limit1 = regex_search_compat(text, text_len, &re, 5);
-    // Limit = 12: Should find first "aaa" (ends 3), second "aaa" (ends 11).
-    uint64_t matches_limit2 = regex_search_compat(text, text_len, &re, 12);
-    // Limit = 0: Should find 0 matches.
-    uint64_t matches_limit0 = regex_search_compat(text, text_len, &re, 0);
-
+    // Test with different limits
+    params.max_count = SIZE_MAX; // Effectively no limit
+    uint64_t matches_full = regex_search(&params, text, text_len, result);
     TEST_ASSERT(matches_full == 4, "Regex finds all 4 'aaa' with no limit");
-    // Assuming the limit in compat wrapper restricts the search *area*
-    TEST_ASSERT(matches_limit1 == 1, "Regex finds 1 'aaa' within limit 5");
-    TEST_ASSERT(matches_limit2 == 2, "Regex finds 2 'aaa's within limit 12");
+
+    params.max_count = 3;
+    uint64_t matches_limit3 = regex_search(&params, text, text_len, result);
+    TEST_ASSERT(matches_limit3 == 3, "Regex finds 3 'aaa' with limit 3");
+
+    params.max_count = 2;
+    uint64_t matches_limit2 = regex_search(&params, text, text_len, result);
+    TEST_ASSERT(matches_limit2 == 2, "Regex finds 2 'aaa' with limit 2");
+
+    params.max_count = 1;
+    uint64_t matches_limit1 = regex_search(&params, text, text_len, result);
+    TEST_ASSERT(matches_limit1 == 1, "Regex finds 1 'aaa' with limit 1");
+
+    params.max_count = 0;
+    uint64_t matches_limit0 = regex_search(&params, text, text_len, result);
     TEST_ASSERT(matches_limit0 == 0, "Regex finds 0 with limit 0");
 
-    // Free compiled regex object
-    regfree(&re);
+    // Test with tracking positions
+    params.track_positions = true;
+    params.max_count = 2;
+    result = match_result_init(5);
+    uint64_t matches_limit2_track = regex_search(&params, text, text_len, result);
+    TEST_ASSERT(matches_limit2_track == 2, "Regex finds 2 'aaa' with limit 2 (tracking)");
+    TEST_ASSERT(result->count == 2, "Result has 2 positions with limit 2 (tracking)");
+    match_result_free(result);
+    result = NULL;
+
+    // Cleanup compiled regex allocated by helper
+    cleanup_params(&params);
 }
 
 /**
@@ -324,10 +339,29 @@ void test_regex_vs_literal_performance(void)
     size_t expected_literal_count = 0;
     for (size_t i = 0; i < size; i++)
     {
-        large_text[i] = (i % 1000 == 0) ? 'b' : 'a';
-        if (i % 1000 == 0)
+        // Ensure 'b' is placed correctly
+        if (i > 0 && i % 1000 == 0)
+        {
+            large_text[i] = 'b';
             expected_literal_count++;
+        }
+        else
+        {
+            large_text[i] = 'a';
+        }
     }
+    // Handle potential edge case if size is multiple of 1000
+    if (size > 0 && size % 1000 == 0)
+    {
+        large_text[size - 1] = 'a'; // Avoid ending with 'b' if it complicates things
+    }
+    // Place one 'b' at the start if size > 0
+    if (size > 0)
+    {
+        large_text[0] = 'b';
+        expected_literal_count++;
+    }
+
     large_text[size] = '\0';
 
     // Create search pattern
@@ -335,22 +369,28 @@ void test_regex_vs_literal_performance(void)
     size_t pattern_len = 1;
 
     printf("Comparing performance for %zu KB text with single-char pattern '%s'...\n", size / 1024, pattern);
+    printf("Expected matches: %zu\n", expected_literal_count); // Debug print
 
     // --- Measure literal search time ---
     clock_t start_lit = clock();
 
-    // Create search params for Boyer-Moore
-    search_params_t bm_params;
-    bm_params.pattern = pattern;
-    bm_params.pattern_len = pattern_len;
-    bm_params.case_sensitive = true;
-    bm_params.use_regex = false;
-    bm_params.track_positions = false;
-    bm_params.count_lines_mode = false;
-    bm_params.count_matches_mode = false;
-    bm_params.compiled_regex = NULL;
+    // Create search params for Boyer-Moore, configured for match counting
+    search_params_t bm_params = {
+        .pattern = pattern,
+        .pattern_len = pattern_len,
+        .case_sensitive = true,
+        .use_regex = false,
+        .track_positions = false,   // Don't track positions
+        .count_lines_mode = false,  // Don't count lines
+        .count_matches_mode = true, // Indicate intent to count matches (though BM uses !track && !lines)
+        .compiled_regex = NULL,
+        .max_count = SIZE_MAX,
+        // Assign multi-pattern fields for consistency if helper not used
+        .patterns = (const char **)&pattern, // Point to the single pattern
+        .pattern_lens = &pattern_len,
+        .num_patterns = 1};
 
-    // Use the bridge function via our redefined macro
+    // Use the actual boyer_moore_search function
     uint64_t literal_count = boyer_moore_search(&bm_params, large_text, size, NULL);
 
     clock_t end_lit = clock();
@@ -360,8 +400,23 @@ void test_regex_vs_literal_performance(void)
     // --- Measure regex search time ---
     regex_t re = create_regex(pattern, true); // Case-sensitive regex "b"
     clock_t start_re = clock();
-    // Use the compatibility wrapper for regex
-    uint64_t regex_count = regex_search_compat(large_text, size, &re, SIZE_MAX);
+    // Create params for regex search, configured for match counting
+    search_params_t re_params = {
+        .pattern = pattern, // Informational
+        .pattern_len = pattern_len,
+        .case_sensitive = true, // Set via regcomp flags
+        .use_regex = true,
+        .track_positions = false,   // Don't track positions
+        .count_lines_mode = false,  // Don't count lines
+        .count_matches_mode = true, // Indicate intent
+        .compiled_regex = &re,
+        .max_count = SIZE_MAX,
+        // Assign multi-pattern fields
+        .patterns = (const char **)&pattern,
+        .pattern_lens = &pattern_len,
+        .num_patterns = 1};
+    // Use the actual regex_search function
+    uint64_t regex_count = regex_search(&re_params, large_text, size, NULL);
     clock_t end_re = clock();
     double regex_time = ((double)(end_re - start_re)) / CLOCKS_PER_SEC;
     TEST_ASSERT(regex_count == expected_literal_count, "Regex search found correct count");
@@ -370,14 +425,22 @@ void test_regex_vs_literal_performance(void)
     printf("  Literal search: %" PRIu64 " matches in %.6f seconds\n", literal_count, literal_time);
     printf("  Regex search:   %" PRIu64 " matches in %.6f seconds\n", regex_count, regex_time);
     // Avoid division by zero if literal_time is extremely small
-    if (literal_time > 1e-9)
+    if (literal_time > 1e-9 && regex_time >= 0) // Ensure times are non-negative
     {
         printf("  Regex is %.2f times slower than literal search for this pattern\n",
                regex_time / literal_time);
     }
-    else
+    else if (regex_time < 1e-9 && literal_time < 1e-9)
+    {
+        printf("  Both searches too fast to calculate ratio.\n");
+    }
+    else if (literal_time < 1e-9)
     {
         printf("  Literal search too fast to calculate ratio.\n");
+    }
+    else
+    {
+        printf("  Could not calculate ratio (regex_time=%.6f, literal_time=%.6f).\n", regex_time, literal_time);
     }
 
     // Cleanup
@@ -404,8 +467,13 @@ void test_regex_line_extraction(void)
         .track_positions = true,     // Enable position tracking
         .count_lines_mode = false,   // Not counting lines
         .count_matches_mode = false, // Not just counting matches
-        .compiled_regex = NULL       // Will be set after compilation
+        .compiled_regex = NULL,      // Will be set after compilation
+        .max_count = SIZE_MAX        // No limit for this test
     };
+    // Assign multi-pattern fields
+    params.patterns = (const char **)&params.pattern;
+    params.pattern_lens = &params.pattern_len;
+    params.num_patterns = 1;
 
     // Compile the regex
     regex_t regex_obj;
@@ -432,13 +500,8 @@ void test_regex_line_extraction(void)
     }
 
     // --- Call the original regex_search function ---
-    // Temporarily undefine the regex_search macro (defined in test_compat.h)
-    // to ensure we call the actual function from krep.c, not the wrapper.
-#undef regex_search
     // Perform search using the original function signature, passing the result struct
     uint64_t match_count = regex_search(&params, text, text_len, result);
-    // Redefine the regex_search macro back to the compatibility wrapper
-#define regex_search regex_search_compat
     // --- End of original function call ---
 
     // --- Verify results ---

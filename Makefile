@@ -5,120 +5,76 @@
 PREFIX ?= /usr/local
 BINDIR = $(PREFIX)/bin
 
-# Set to 0 to disable architecture-specific optimizations
-ENABLE_ARCH_DETECTION ?= 1
-
 CC = gcc
-# Base CFLAGS (without testing or specific arch flags initially)
-BASE_CFLAGS = -Wall -Wextra -O3 -std=c11 -pthread -D_GNU_SOURCE -D_DEFAULT_SOURCE
-LDFLAGS =
+CFLAGS = -Wall -Wextra -O3 -std=c11 -pthread -D_GNU_SOURCE -D_DEFAULT_SOURCE
+LDFLAGS = -pthread
 
-# --- Architecture Detection (Keep as is) ---
-ARCH_CFLAGS =
-ifeq ($(ENABLE_ARCH_DETECTION),1)
-    OS := $(shell uname -s)
-    ARCH := $(shell uname -m)
-    ifeq ($(OS),Darwin)
-        ifeq ($(ARCH),Power Macintosh)
-            ARCH := $(shell uname -p)
-        endif
-    endif
-    ifneq (,$(filter x86_64 i386 i686,$(ARCH)))
-        ifeq ($(shell $(CC) -march=native -dM -E - < /dev/null 2>/dev/null | grep -q '__SSE4_2__' && echo yes),yes)
-            ARCH_CFLAGS += -msse4.2
-        endif
-        ifeq ($(shell $(CC) -march=native -dM -E - < /dev/null 2>/dev/null | grep -q '__AVX2__' && echo yes),yes)
-            ARCH_CFLAGS += -mavx2
-        endif
-    endif
-    ifneq (,$(filter ppc ppc64 powerpc powerpc64,$(ARCH)))
-        ifeq ($(shell $(CC) -mcpu=native -dM -E - < /dev/null 2>/dev/null | grep -q 'ALTIVEC' && echo yes),yes)
-            ARCH_CFLAGS += -maltivec
-        endif
-    endif
-    ifneq (,$(filter arm arm64 aarch64,$(ARCH)))
-        # Define __ARM_NEON if detected or assumed (like on Apple Silicon)
-        NEON_DETECTED=no
-        ifeq ($(OS),Darwin)
-            # Assume NEON on Apple Silicon/macOS ARM
-            NEON_DETECTED=yes
-        else
-            # Check generic ARM
-             ifeq ($(shell $(CC) -mcpu=native -dM -E - < /dev/null 2>/dev/null | grep -q '__ARM_NEON' && echo yes),yes)
-                NEON_DETECTED=yes
-                # Add specific FPU flags only if needed (usually not for arm64)
-                # ifneq (,$(filter arm,$(ARCH)))
-                #    ARCH_CFLAGS += -mfpu=neon
-                # endif
-            endif
-        endif
-        # Add the define if NEON is detected/assumed
-        ifeq ($(NEON_DETECTED),yes)
-             ARCH_CFLAGS += -D__ARM_NEON
-        endif
-    endif
+# Detect architecture for SIMD flags (basic example)
+ARCH := $(shell uname -m)
+
+ifeq ($(ARCH), x86_64)
+    # Check for AVX2 support (requires CPU supporting it)
+    # This check might need refinement based on specific CPU features
+    # For simplicity, we'll enable SSE4.2 by default on x86_64
+    CFLAGS += -msse4.2
+    # To enable AVX2, uncomment the line below and ensure your CPU supports it
+    # CFLAGS += -mavx2
+else ifeq ($(ARCH), arm64)
+    # Enable NEON for arm64 (Apple Silicon, etc.)
+    CFLAGS += -D__ARM_NEON
+    # Note: GCC might enable NEON automatically on arm64, but explicit flag is safer
 endif
-# --- End Arch Detection ---
 
-# Combine base and arch flags for normal compilation
-CFLAGS = $(BASE_CFLAGS) $(ARCH_CFLAGS)
+# Source files
+SRCS = krep.c aho_corasick.c
+OBJS = $(SRCS:.c=.o)
 
-# Specific flags for testing compilation
-TEST_CFLAGS = $(CFLAGS) -DTESTING
+# Test source files
+TEST_SRCS = test/test_krep.c test/test_regex.c test/test_multiple_patterns.c
+TEST_OBJS_MAIN = krep_test.o aho_corasick_test.o # Specific objects for test build
+TEST_OBJS_TEST = $(TEST_SRCS:.c=.o)
+TEST_TARGET = krep_test
 
-# Add aho_corasick.c to the source files
-SRC = krep.c aho_corasick.c
-OBJ = $(SRC:.c=.o) # krep.o aho_corasick.o (for main executable)
-EXEC = krep
-
-# Test source files and their object files
-TEST_SRC_FILES = test/test_krep.c test/test_regex.c test/test_multiple_patterns.c
-TEST_OBJ = $(TEST_SRC_FILES:.c=.o) # test/test_krep.o test/test_regex.o test/test_multiple_patterns.o
-TEST_EXEC = test_krep
-
-# Define separate object files for sources when compiled for testing
-KREP_TEST_OBJ = krep_test.o
-AHO_CORASICK_TEST_OBJ = aho_corasick_test.o
-
-# Default target
-all: $(EXEC)
-
-# Rule to build the main executable
-$(EXEC): $(OBJ)
-	$(CC) $(CFLAGS) -o $(EXEC) $(OBJ) $(LDFLAGS)
-
-# Rule to build the main krep.o (uses CFLAGS, includes main)
-$(OBJ): %.o: %.c krep.h
-	$(CC) $(CFLAGS) -c $< -o $@
-
-# Rule to build test object files (uses TEST_CFLAGS)
-$(TEST_OBJ): test/%.o: test/%.c test/test_krep.h test/test_compat.h krep.h
-	$(CC) $(TEST_CFLAGS) -c $< -o $@
-
-# Rule to build krep.c specifically *for testing* (uses TEST_CFLAGS, excludes main)
-$(KREP_TEST_OBJ): krep.c krep.h
-	$(CC) $(TEST_CFLAGS) -c $< -o $@
-
-# Rule to build aho_corasick.c specifically for testing
-$(AHO_CORASICK_TEST_OBJ): aho_corasick.c krep.h
-	$(CC) $(TEST_CFLAGS) -c $< -o $@
-
-# Rule to build the test executable (links test objects + krep_test.o + aho_corasick_test.o)
-$(TEST_EXEC): $(KREP_TEST_OBJ) $(AHO_CORASICK_TEST_OBJ) $(TEST_OBJ)
-	$(CC) $(TEST_CFLAGS) -o $(TEST_EXEC) $^ $(LDFLAGS)
-
-# Target to run tests
-test: $(TEST_EXEC)
-	./$(TEST_EXEC)
-
-clean:
-	rm -f $(OBJ) $(EXEC) $(TEST_OBJ) $(TEST_EXEC) $(KREP_TEST_OBJ) $(AHO_CORASICK_TEST_OBJ)
-
-install: $(EXEC)
-	install -d $(DESTDIR)$(BINDIR)
-	install -m 755 $(EXEC) $(DESTDIR)$(BINDIR)/$(EXEC)
-
-uninstall:
-	rm -f $(DESTDIR)$(BINDIR)/$(EXEC)
+TARGET = krep
 
 .PHONY: all clean install uninstall test
+
+all: $(TARGET)
+
+$(TARGET): $(OBJS)
+	$(CC) $(CFLAGS) -o $(TARGET) $(OBJS) $(LDFLAGS)
+
+# Rule for main objects
+%.o: %.c krep.h aho_corasick.h
+	$(CC) $(CFLAGS) -c $< -o $@
+
+# --- Test Build ---
+# Rule for test-specific main objects (compiled with -DTESTING)
+krep_test.o: krep.c krep.h aho_corasick.h
+	$(CC) $(CFLAGS) -DTESTING -c krep.c -o krep_test.o
+
+aho_corasick_test.o: aho_corasick.c krep.h aho_corasick.h
+	$(CC) $(CFLAGS) -DTESTING -c aho_corasick.c -o aho_corasick_test.o
+
+# Rule for test file objects (compiled with -DTESTING)
+test/%.o: test/%.c test/test_krep.h test/test_compat.h krep.h
+	$(CC) $(CFLAGS) -DTESTING -c $< -o $@
+
+# Link test executable
+$(TEST_TARGET): $(TEST_OBJS_MAIN) $(TEST_OBJS_TEST)
+	$(CC) $(CFLAGS) -DTESTING -o $(TEST_TARGET) $(TEST_OBJS_MAIN) $(TEST_OBJS_TEST) $(LDFLAGS) -lm # Add -lm if needed
+
+test: $(TEST_TARGET)
+	./$(TEST_TARGET)
+
+# --- Installation ---
+install: $(TARGET)
+	install -d $(DESTDIR)$(BINDIR)
+	install -m 755 $(TARGET) $(DESTDIR)$(BINDIR)/$(TARGET)
+
+uninstall:
+	rm -f $(DESTDIR)$(BINDIR)/$(TARGET)
+
+# --- Cleanup ---
+clean:
+	rm -f $(TARGET) $(TEST_TARGET) $(OBJS) $(TEST_OBJS_MAIN) $(TEST_OBJS_TEST) *.o test/*.o

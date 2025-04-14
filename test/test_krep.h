@@ -46,4 +46,41 @@ void test_regex_vs_literal_performance(void);
 void test_regex_line_extraction(void);
 void run_regex_tests(void);
 
+/* Helper function declarations */
+
+/**
+ * @brief Creates search parameters for a single literal pattern test.
+ *
+ * Allocates memory for patterns and pattern_lens arrays. Caller must call cleanup_params.
+ *
+ * @param pattern The literal string pattern.
+ * @param case_sensitive True for case-sensitive search.
+ * @param count_lines True if simulating -c mode.
+ * @param only_match True if simulating -o mode (influences track_positions).
+ * @return A search_params_t structure configured for the test.
+ */
+search_params_t create_literal_params(const char *pattern, bool case_sensitive, bool count_lines, bool only_match);
+
+/**
+ * @brief Creates search parameters for a single regex pattern test.
+ *
+ * Allocates memory for patterns, pattern_lens, and compiles the regex. Caller must call cleanup_params.
+ *
+ * @param pattern The regex string pattern.
+ * @param case_sensitive True for case-sensitive search.
+ * @param count_lines True if simulating -c mode.
+ * @param only_match True if simulating -o mode (influences track_positions).
+ * @return A search_params_t structure configured for the test.
+ */
+search_params_t create_regex_params(const char *pattern, bool case_sensitive, bool count_lines, bool only_match);
+
+/**
+ * @brief Cleans up resources allocated by create_literal_params or create_regex_params.
+ *
+ * Frees the compiled regex (if any) and the pattern arrays.
+ *
+ * @param params Pointer to the search_params_t structure to clean up.
+ */
+void cleanup_params(search_params_t *params);
+
 #endif /* TEST_KREP_H */
