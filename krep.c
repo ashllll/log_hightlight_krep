@@ -3677,3 +3677,282 @@ uint64_t neon_search(const search_params_t *params,
     return boyer_moore_search(params, text_start, text_len, result);
 }
 #endif
+
+// --- SIMD Implementations (Placeholders/Actual) ---
+
+#if KREP_USE_SSE42
+// SSE4.2 search function using _mm_cmpestri
+// Handles case-sensitive patterns up to 16 bytes.
+uint64_t simd_sse42_search(const search_params_t *params,
+                           const char *text_start,
+                           size_t text_len,
+                           match_result_t *result)
+{
+    // Precondition checks
+    if (params->pattern_len == 0 || params->pattern_len > 16 || !params->case_sensitive || text_len < params->pattern_len)
+    {
+        // Fallback if preconditions not met
+        return boyer_moore_search(params, text_start, text_len, result);
+    }
+    if (params->max_count == 0 && (params->count_lines_mode || params->track_positions))
+        return 0;
+
+    uint64_t current_count = 0;
+    size_t pattern_len = params->pattern_len;
+    const char *pattern = params->pattern;
+    bool count_lines_mode = params->count_lines_mode;
+    bool track_positions = params->track_positions;
+    size_t max_count = params->max_count;
+    size_t last_counted_line_start = SIZE_MAX;
+
+    // Load the pattern into an XMM register
+    __m128i pattern_vec = _mm_loadu_si128((const __m128i *)pattern);
+
+    const char *current_pos = text_start;
+    size_t remaining_len = text_len;
+
+    // Mode for _mm_cmpestri: compare strings, return index, positive polarity
+    const int cmp_mode = _SIDD_CMP_EQUAL_ORDERED | _SIDD_POSITIVE_POLARITY | _SIDD_LEAST_SIGNIFICANT;
+
+    while (remaining_len >= pattern_len)
+    {
+        // Determine chunk size (max 16 bytes for _mm_cmpestri)
+        size_t chunk_len = (remaining_len < 16) ? remaining_len : 16;
+
+        // Load text chunk into an XMM register
+        __m128i text_vec = _mm_loadu_si128((const __m128i *)current_pos);
+
+        // Compare pattern against the text chunk
+        // _mm_cmpestri returns the index of the first byte of the first match
+        // or chunk_len if no match is found within the chunk.
+        int index = _mm_cmpestri(pattern_vec, pattern_len, text_vec, chunk_len, cmp_mode);
+
+        if (index < (int)(chunk_len - pattern_len + 1))
+        {
+            // Match found within the current 16-byte window at 'index'
+            size_t match_start_offset = (current_pos - text_start) + index;
+            bool count_incremented_this_match = false;
+
+            if (count_lines_mode)
+            {
+                size_t line_start = find_line_start(text_start, text_len, match_start_offset);
+                if (line_start != last_counted_line_start)
+                {
+                    current_count++;
+                    last_counted_line_start = line_start;
+                    count_incremented_this_match = true;
+                }
+            }
+            else
+            {
+                current_count++;
+                count_incremented_this_match = true;
+                if (track_positions && result)
+                {
+                    if (current_count <= max_count)
+                    {
+                        if (!match_result_add(result, match_start_offset, match_start_offset + pattern_len))
+                        {
+                            fprintf(stderr, "Warning: Failed to add SSE4.2 match position.\n");
+                            // Consider stopping if adding fails critically
+                        }
+                    }
+                }
+            }
+
+            // Check max_count limit
+            if (count_incremented_this_match && current_count >= max_count)
+            {
+                break;
+            }
+
+            // Advance position past the found match to find next potential match
+            size_t advance = index + 1; // Advance by at least 1 byte past the start of the match
+            current_pos += advance;
+            remaining_len -= advance;
+        }
+        else
+        {
+            // No match found in this chunk. Advance past most of the chunk.
+            // Advance by 16 - pattern_len + 1 to ensure potential matches overlapping
+            // the boundary are caught in the next iteration.
+            size_t advance = (chunk_len > pattern_len) ? (chunk_len - pattern_len + 1) : 1;
+            if (advance > remaining_len)
+                break; // Avoid infinite loop if remaining_len is small
+            current_pos += advance;
+            remaining_len -= advance;
+        }
+    }
+
+    return current_count;
+}
+#endif
+
+#if KREP_USE_AVX2
+// AVX2 search function
+// Handles case-sensitive patterns up to 32 bytes.
+// Uses SSE4.2 logic for patterns <= 16 bytes.
+// Uses a simplified first/last byte check for patterns > 16 bytes.
+uint64_t simd_avx2_search(const search_params_t *params,
+                          const char *text_start,
+                          size_t text_len,
+                          match_result_t *result)
+{
+    // Precondition checks
+    if (params->pattern_len == 0 || params->pattern_len > 32 || !params->case_sensitive || text_len < params->pattern_len)
+    {
+        return boyer_moore_search(params, text_start, text_len, result);
+    }
+    if (params->max_count == 0 && (params->count_lines_mode || params->track_positions))
+        return 0;
+
+    // Use SSE4.2 logic if pattern fits and SSE4.2 is available
+#if KREP_USE_SSE42
+    if (params->pattern_len <= 16)
+    {
+        return simd_sse42_search(params, text_start, text_len, result);
+    }
+#endif
+
+    // --- AVX2 specific logic for pattern_len > 16 and <= 32 ---
+    uint64_t current_count = 0;
+    size_t pattern_len = params->pattern_len;
+    const char *pattern = params->pattern;
+    bool count_lines_mode = params->count_lines_mode;
+    bool track_positions = params->track_positions;
+    size_t max_count = params->max_count;
+    size_t last_counted_line_start = SIZE_MAX;
+
+    // Create vectors for the first and last bytes of the pattern
+    __m256i first_byte_vec = _mm256_set1_epi8(pattern[0]);
+    __m256i last_byte_vec = _mm256_set1_epi8(pattern[pattern_len - 1]);
+
+    const char *current_pos = text_start;
+    size_t remaining_len = text_len;
+
+    while (remaining_len >= 32) // Process in 32-byte chunks
+    {
+        // Load 32 bytes of text
+        __m256i text_vec = _mm256_loadu_si256((const __m256i *)current_pos);
+
+        // Compare first byte of pattern with text
+        __m256i first_cmp = _mm256_cmpeq_epi8(first_byte_vec, text_vec);
+
+        // Compare last byte of pattern with text shifted by pattern_len - 1
+        // This requires loading potentially unaligned data for the last byte comparison
+        __m256i text_last_byte_vec = _mm256_loadu_si256((const __m256i *)(current_pos + pattern_len - 1));
+        __m256i last_cmp = _mm256_cmpeq_epi8(last_byte_vec, text_last_byte_vec);
+
+        // Combine the masks: a potential match starts where both first and last bytes match
+        // Note: _mm256_and_si256 operates on the comparison results directly
+        // We need the mask of indices where *both* comparisons are true.
+        // Get integer masks
+        uint32_t first_mask = _mm256_movemask_epi8(first_cmp);
+        // The last_mask needs to correspond to the *start* position of the potential match
+        uint32_t last_mask = _mm256_movemask_epi8(last_cmp);
+
+        // Combine masks: potential match starts at index 'i' if bit 'i' is set in both masks.
+        uint32_t potential_starts_mask = first_mask & last_mask;
+
+        // Iterate through potential start positions indicated by the combined mask
+        while (potential_starts_mask != 0)
+        {
+            // Find the index of the lowest set bit (potential match start)
+            int index = __builtin_ctz(potential_starts_mask); // Use compiler intrinsic for count trailing zeros
+
+            // Verify the full pattern match at this position
+            if (memcmp(current_pos + index, pattern, pattern_len) == 0)
+            {
+                // Full match confirmed
+                size_t match_start_offset = (current_pos - text_start) + index;
+                bool count_incremented_this_match = false;
+
+                if (count_lines_mode)
+                {
+                    size_t line_start = find_line_start(text_start, text_len, match_start_offset);
+                    if (line_start != last_counted_line_start)
+                    {
+                        current_count++;
+                        last_counted_line_start = line_start;
+                        count_incremented_this_match = true;
+                    }
+                }
+                else
+                {
+                    current_count++;
+                    count_incremented_this_match = true;
+                    if (track_positions && result)
+                    {
+                        if (current_count <= max_count)
+                        {
+                            if (!match_result_add(result, match_start_offset, match_start_offset + pattern_len))
+                            {
+                                fprintf(stderr, "Warning: Failed to add AVX2 match position.\n");
+                            }
+                        }
+                    }
+                }
+
+                // Check max_count limit
+                if (count_incremented_this_match && current_count >= max_count)
+                {
+                    goto end_avx2_search; // Exit outer loop
+                }
+            }
+
+            // Clear the found bit to find the next potential start
+            potential_starts_mask &= potential_starts_mask - 1;
+        }
+
+        // Advance position. Advance by 32 for simplicity, might miss overlaps near boundary.
+        // A safer advance would be smaller, e.g., 1 or based on last potential match.
+        // For this basic version, we advance by 32.
+        current_pos += 32;
+        remaining_len -= 32;
+    }
+
+    // Handle the remaining tail (less than 32 bytes) using scalar search
+    if (remaining_len >= pattern_len)
+    {
+        // Create a temporary params struct for the tail search
+        search_params_t tail_params = *params;
+        // Adjust max_count for the remaining part
+        if (max_count != SIZE_MAX)
+        {
+            tail_params.max_count = (current_count >= max_count) ? 0 : max_count - current_count;
+        }
+
+        // Use Boyer-Moore for the tail
+        uint64_t tail_count = boyer_moore_search(&tail_params, current_pos, remaining_len, result);
+
+        // Adjust global count and potentially merge results (BM adds directly if result is passed)
+        // Need to adjust offsets if result was passed to BM
+        if (result && track_positions && tail_count > 0)
+        {
+            // Find where the tail results start in the global result list
+            uint64_t bm_start_index = current_count; // Assuming BM added sequentially
+            if (bm_start_index > result->count)
+                bm_start_index = result->count; // Safety check
+            uint64_t added_by_bm = result->count - bm_start_index;
+
+            size_t tail_offset = current_pos - text_start;
+            for (uint64_t k = 0; k < added_by_bm; ++k)
+            {
+                result->positions[bm_start_index + k].start_offset += tail_offset;
+                result->positions[bm_start_index + k].end_offset += tail_offset;
+            }
+        }
+        current_count += tail_count;
+        // Ensure final count doesn't exceed max_count
+        if (max_count != SIZE_MAX && current_count > max_count)
+        {
+            current_count = max_count;
+            // Note: Result list might have slightly more entries than max_count here,
+            // but print_matching_items respects max_count.
+        }
+    }
+
+end_avx2_search:
+    return current_count;
+}
+#endif
