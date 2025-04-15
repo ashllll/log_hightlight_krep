@@ -1079,7 +1079,8 @@ void print_usage(const char *program_name)
     printf("  --no-simd      Explicitly disable SIMD acceleration.\n");
     printf("  -v             Show version information and exit.\n");
     printf("  -h, --help     Show this help message and exit.\n");
-    printf("  -m NUM         Stop reading a file after NUM matching lines.\n\n");
+    printf("  -m NUM         Stop reading a file after NUM matching lines.\n");
+    printf("  -w             Select only matches that form whole words.\n\n");
     printf("EXIT STATUS:\n");
     printf("  0 if matches were found,\n");
     printf("  1 if no matches were found,\n");
@@ -1207,6 +1208,12 @@ uint64_t boyer_moore_search(const search_params_t *params,
 
             if (full_match)
             {
+                // Whole word check
+                if (params->whole_word && !is_whole_word_match(text_start, text_len, i, i + pattern_len))
+                {
+                    i++;
+                    continue;
+                }
                 bool count_incremented_this_match = false;
                 if (count_lines_mode)
                 {
@@ -1466,6 +1473,13 @@ uint64_t kmp_search(const search_params_t *params,
             size_t match_start_index = i - j;
 
             // --- Match Found ---
+            // Whole word check
+            if (params->whole_word && !is_whole_word_match(text_start, text_len, match_start_index, match_start_index + pattern_len))
+            {
+                j = 0;
+                continue;
+            }
+
             if (count_lines_mode) // -c mode
             {
                 size_t line_start = find_line_start(text_start, text_len, match_start_index);
@@ -1827,7 +1841,8 @@ int search_string(const search_params_t *params, const char *text)
             size_t total_len = 0;
             for (size_t i = 0; i < current_params.num_patterns; ++i)
             {
-                total_len += current_params.pattern_lens[i] + 3; // pattern + () + |
+                // Add 6 for wrapping with (\b...\b)
+                total_len += current_params.pattern_lens[i] + (current_params.whole_word ? 6 : 2) + 1; // () or (\b...\b) + |
             }
 
             // Allocate and build combined pattern
@@ -1842,7 +1857,10 @@ int search_string(const search_params_t *params, const char *text)
             char *ptr = combined_regex_pattern;
             for (size_t i = 0; i < current_params.num_patterns; ++i)
             {
-                ptr += sprintf(ptr, "(%s)", current_params.patterns[i]);
+                if (current_params.whole_word)
+                    ptr += sprintf(ptr, "(\\b%s\\b)", current_params.patterns[i]);
+                else
+                    ptr += sprintf(ptr, "(%s)", current_params.patterns[i]);
                 if (i < current_params.num_patterns - 1)
                 {
                     ptr += sprintf(ptr, "|");
@@ -1853,7 +1871,24 @@ int search_string(const search_params_t *params, const char *text)
         }
         else if (current_params.num_patterns == 1)
         {
-            regex_to_compile = current_params.patterns[0];
+            if (current_params.whole_word)
+            {
+                size_t len = strlen(current_params.patterns[0]);
+                char *tmp = malloc(len + 7); // (\b) + pattern + (\b) + null
+                if (!tmp)
+                {
+                    fprintf(stderr, "krep: Failed to allocate memory for regex pattern.\n");
+                    goto cleanup;
+                }
+                sprintf(tmp, "\\b%s\\b", current_params.patterns[0]);
+                regex_to_compile = tmp;
+                free(combined_regex_pattern); // In case it was set
+                combined_regex_pattern = tmp; // So it gets freed later
+            }
+            else
+            {
+                regex_to_compile = current_params.patterns[0];
+            }
         }
         else
         {
@@ -2215,7 +2250,8 @@ int search_file(const search_params_t *params, const char *filename, int request
             size_t total_len = 0;
             for (size_t i = 0; i < current_params.num_patterns; ++i)
             {
-                total_len += current_params.pattern_lens[i] + 3; // pattern + () + |
+                // Add 6 for wrapping with (\b...\b)
+                total_len += current_params.pattern_lens[i] + (current_params.whole_word ? 6 : 2) + 1; // () or (\b...\b) + |
             }
             combined_regex_pattern = malloc(total_len + 1); // +1 for null terminator
             if (!combined_regex_pattern)
@@ -2227,7 +2263,10 @@ int search_file(const search_params_t *params, const char *filename, int request
             char *ptr = combined_regex_pattern;
             for (size_t i = 0; i < current_params.num_patterns; ++i)
             {
-                ptr += sprintf(ptr, "(%s)", current_params.patterns[i]);
+                if (current_params.whole_word)
+                    ptr += sprintf(ptr, "(\\b%s\\b)", current_params.patterns[i]);
+                else
+                    ptr += sprintf(ptr, "(%s)", current_params.patterns[i]);
                 if (i < current_params.num_patterns - 1)
                 {
                     ptr += sprintf(ptr, "|");
@@ -2238,7 +2277,25 @@ int search_file(const search_params_t *params, const char *filename, int request
         }
         else if (current_params.num_patterns == 1)
         {
-            regex_to_compile = current_params.patterns[0]; // Ensure correct pattern is used
+            if (current_params.whole_word)
+            {
+                size_t len = strlen(current_params.patterns[0]);
+                char *tmp = malloc(len + 7); // (\b) + pattern + (\b) + null
+                if (!tmp)
+                {
+                    fprintf(stderr, "krep: Failed to allocate memory for regex pattern.\n");
+                    close(fd);
+                    return 2;
+                }
+                sprintf(tmp, "\\b%s\\b", current_params.patterns[0]);
+                regex_to_compile = tmp;
+                free(combined_regex_pattern); // In case it was set
+                combined_regex_pattern = tmp; // So it gets freed later
+            }
+            else
+            {
+                regex_to_compile = current_params.patterns[0]; // Ensure correct pattern is used
+            }
         }
         else
         { // Should not happen due to earlier check
@@ -2798,7 +2855,8 @@ int main(int argc, char *argv[])
         {"fixed-strings", no_argument, 0, 'F'},   // --fixed-strings, same as default
         {"regexp", required_argument, 0, 'e'},    // Treat -e as --regexp for consistency
         {"max-count", required_argument, 0, 'm'}, // --max-count=NUM option
-        {0, 0, 0, 0}};                            // Terminator
+        {0, 0, 0, 0}                              // Terminator
+    };
     int option_index = 0;
     int opt;
 
@@ -2806,7 +2864,7 @@ int main(int argc, char *argv[])
     params.max_count = SIZE_MAX;
 
     // --- Parse Command Line Options ---
-    while ((opt = getopt_long(argc, argv, "+e:f:icm:oEFrt:s:vh", long_options, &option_index)) != -1)
+    while ((opt = getopt_long(argc, argv, "+e:f:icm:oEFrt:s:vhw", long_options, &option_index)) != -1)
     {
         switch (opt)
         {
@@ -2956,6 +3014,9 @@ int main(int argc, char *argv[])
             break;
         case 'S': // --no-simd option
             force_no_simd = true;
+            break;
+        case 'w': // Whole word
+            params.whole_word = true;
             break;
         case '?': // Unknown option or missing argument from getopt
         default:  // Should not happen
@@ -3176,6 +3237,13 @@ uint64_t memchr_search(const search_params_t *params,
         size_t match_pos = found - text_start;
 
         // Match found at match_pos
+        // Whole word check
+        if (params->whole_word && !is_whole_word_match(text_start, text_len, match_pos, match_pos + 1))
+        {
+            pos = match_pos + 1;
+            continue;
+        }
+
         if (count_lines_mode)
         {
             size_t line_start = find_line_start(text_start, text_len, match_pos);
@@ -3590,6 +3658,14 @@ uint64_t memchr_short_search(const search_params_t *params,
         if (full_match)
         {
             size_t match_start_offset = potential_match - text_start;
+            // Whole word check
+            if (params->whole_word && !is_whole_word_match(text_start, text_len, match_start_offset, match_start_offset + pattern_len))
+            {
+                current_pos = potential_match + 1;
+                remaining_len -= (potential_match - current_pos) + 1;
+                continue;
+            }
+
             bool count_incremented_this_match = false;
 
             if (count_lines_mode)
@@ -3702,6 +3778,14 @@ uint64_t simd_sse42_search(const search_params_t *params,
         {
             // Match found within the current 16-byte window at 'index'
             size_t match_start_offset = (current_pos - text_start) + index;
+            // Whole word check
+            if (params->whole_word && !is_whole_word_match(text_start, text_len, match_start_offset, match_start_offset + pattern_len))
+            {
+                current_pos += index + 1;
+                remaining_len -= index + 1;
+                continue;
+            }
+
             bool count_incremented_this_match = false;
 
             if (count_lines_mode)
@@ -3836,6 +3920,13 @@ uint64_t simd_avx2_search(const search_params_t *params,
             {
                 // Full match confirmed
                 size_t match_start_offset = (current_pos - text_start) + index;
+                // Whole word check
+                if (params->whole_word && !is_whole_word_match(text_start, text_len, match_start_offset, match_start_offset + pattern_len))
+                {
+                    potential_starts_mask &= potential_starts_mask - 1;
+                    continue;
+                }
+
                 bool count_incremented_this_match = false;
 
                 if (count_lines_mode)

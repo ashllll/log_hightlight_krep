@@ -372,6 +372,41 @@ void test_case_insensitive_new(void)
 }
 
 /**
+ * Test whole word (-w) option
+ */
+void test_whole_word_option(void)
+{
+    printf("\n=== Whole Word (-w) Option Tests ===\n");
+    const char *text = "cat scatter catalog cat catapult cat";
+    size_t text_len = strlen(text);
+    match_result_t *result = NULL;
+
+    // Without -w: should match 'cat' in all words containing 'cat'
+    search_params_t params_no_w = create_literal_params("cat", true, false, false);
+    params_no_w.whole_word = false;
+    result = match_result_init(10);
+    TEST_ASSERT(boyer_moore_search(&params_no_w, text, text_len, result) == 6, "BM without -w matches all 'cat' substrings");
+    match_result_free(result);
+    cleanup_params(&params_no_w);
+
+    // With -w: should match only standalone 'cat' (first, fourth, last)
+    search_params_t params_w = create_literal_params("cat", true, false, false);
+    params_w.whole_word = true;
+    result = match_result_init(10);
+    TEST_ASSERT(boyer_moore_search(&params_w, text, text_len, result) == 3, "BM with -w matches only whole word 'cat'");
+    match_result_free(result);
+    cleanup_params(&params_w);
+
+    // Also test with KMP
+    search_params_t params_w_kmp = create_literal_params("cat", true, false, false);
+    params_w_kmp.whole_word = true;
+    result = match_result_init(10);
+    TEST_ASSERT(kmp_search(&params_w_kmp, text, text_len, result) == 3, "KMP with -w matches only whole word 'cat'");
+    match_result_free(result);
+    cleanup_params(&params_w_kmp);
+}
+
+/**
  * Test performance with a simple benchmark using the new structure
  */
 void test_performance_new(void)
@@ -886,6 +921,7 @@ int main(void)
     test_basic_search_new();
     test_edge_cases_new();
     test_case_insensitive_new();
+    test_whole_word_option();
     test_performance_new();
     test_numeric_patterns_new();
 #if KREP_USE_SSE42 || KREP_USE_AVX2 || KREP_USE_NEON

@@ -14,6 +14,7 @@
 #include <regex.h>     // For regex_t type
 #include <pthread.h>   // For mutex types (though no longer used for counting)
 #include <stdatomic.h> // For atomic types used in structs
+#include <ctype.h>     // For isalnum function
 
 /* --- Compiler-specific macros --- */
 #ifdef __GNUC__
@@ -64,6 +65,7 @@ typedef struct
    bool count_lines_mode;   // True for -c mode (count lines)
    bool count_matches_mode; // True for -co mode (count matches - internal concept)
    bool track_positions;    // True for default or -o mode (track positions)
+   bool whole_word;         // True for -w mode (whole word search)
    // bool overlapping_mode; // Implicitly true for -o, handled by algorithm advance logic
 
    // Compiled regex (if applicable, compiled once per file/string)
@@ -260,5 +262,36 @@ size_t find_line_start(const char *text, size_t max_len, size_t pos);
  * @return Position of the end of the line (index of the newline or text length).
  */
 size_t find_line_end(const char *text, size_t text_len, size_t pos);
+
+/* --- Word Character and Whole Word Match Helpers --- */
+
+/**
+ * @brief Check if a character is a word character (alnum or _).
+ *
+ * @param c The character to check.
+ * @return True if the character is a word character, false otherwise.
+ */
+static inline bool is_word_char(char c)
+{
+   return (isalnum((unsigned char)c) || c == '_');
+}
+
+/**
+ * @brief Check if a match is a whole word.
+ *
+ * @param text Pointer to the text buffer.
+ * @param text_len Length of the text buffer.
+ * @param start Start position of the match.
+ * @param end End position of the match.
+ * @return True if the match is a whole word, false otherwise.
+ */
+static inline bool is_whole_word_match(const char *text, size_t text_len, size_t start, size_t end)
+{
+   if (start > 0 && is_word_char(text[start - 1]))
+      return false;
+   if (end < text_len && is_word_char(text[end]))
+      return false;
+   return true;
+}
 
 #endif /* KREP_H */

@@ -61,34 +61,9 @@ krep [OPTIONS] PATTERN < FILE
 cat FILE | krep [OPTIONS] PATTERN
 ```
 
-### Examples
+## Usage Examples
 
-Search for a pattern in a file:
-```bash
-krep "error" system.log
-```
-
-Case-insensitive search:
-```bash
-krep -i "ERROR" large_logfile.log
-```
-
-Count occurrences:
-```bash
-krep -c "TODO" source.c
-```
-
-Limit output to the first 5 matching lines per file:
-```bash
-krep -m 5 "WARNING" /var/log/
-```
-
-Use regular expressions:
-```bash
-krep -E "^[Ee]rror: .*" system.log
-```
-
-Search for literal text that contains regex characters:
+Search for a fixed string in a file:
 ```bash
 krep -F "value: 100%" config.ini
 ```
@@ -96,6 +71,11 @@ krep -F "value: 100%" config.ini
 Search recursively:
 ```bash
 krep -r "function" ./project
+```
+
+Whole word search (matches only complete words):
+```bash
+krep -w 'cat' samples/text.en
 ```
 
 Use with piped input:
@@ -116,6 +96,7 @@ cat krep.c | krep 'c'
 - `-r, --recursive` Recursively search directories
 - `-t NUM, --threads=NUM` Use NUM threads for file search (default: auto)
 - `-s STRING, --string=STRING` Search in the provided STRING instead of file(s)
+- `-w, --word-regexp` Match only whole words
 - `--color[=WHEN]` Control color output ('always', 'never', 'auto')
 - `--no-simd` Explicitly disable SIMD acceleration
 - `-v, --version` Show version information
@@ -125,11 +106,11 @@ cat krep.c | krep 'c'
 
 Comparing performance on the same text file with identical search pattern:
 
-| Tool | Time (seconds) | CPU Usage |
-|------|----------------|-----------|
-| krep | 0.106 | 328% |
-| grep | 4.400 | 99% |
-| ripgrep | 0.115 | 97% |
+| Tool    | Time (seconds) | CPU Usage |
+|---------|---------------:|----------:|
+| krep    |         0.106  |     328%  |
+| grep    |         4.400  |      99%  |
+| ripgrep |         0.115  |      97%  |
 
 *Krep is approximately 41.5x faster than grep and slightly faster than ripgrep in this test. Benchmarks performed on Mac Mini M4 with 24GB RAM.*
 

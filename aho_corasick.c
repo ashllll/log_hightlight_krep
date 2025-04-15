@@ -306,6 +306,10 @@ uint64_t aho_corasick_search(const search_params_t *params,
                 size_t match_start = i - pattern_len + 1;
                 size_t match_end = i + 1;
 
+                // Whole word check
+                if (params->whole_word && !is_whole_word_match((const char *)text_start, text_len, match_start, match_end))
+                    continue;
+
                 bool count_incremented_this_match = false;
 
                 if (count_lines_mode)
