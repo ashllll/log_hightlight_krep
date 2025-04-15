@@ -909,6 +909,91 @@ void test_numeric_patterns_new(void)
     cleanup_params(&params_port_re); // Frees compiled regex
 }
 
+/**
+ * Additional tests for edge cases and coverage
+ */
+void test_additional_cases(void)
+{
+    printf("\n=== Additional Edge Case Tests ===\n");
+
+    // --- Empty haystack with a minimal valid regex (e.g., "^$") ---
+    {
+        search_params_t params = create_regex_params("^$", true, false, false);
+        TEST_ASSERT(regex_search(&params, "", 0, NULL) == 1, "Regex: '^$' matches empty haystack");
+        cleanup_params(&params);
+    }
+
+    // --- Pattern with special regex characters ---
+    {
+        search_params_t params = create_regex_params("a.c", true, false, false);
+        TEST_ASSERT(regex_search(&params, "a\nc abc a-c", strlen("a\nc abc a-c"), NULL) == 2, "Regex: dot matches any char");
+        cleanup_params(&params);
+    }
+
+    // --- Multiple patterns (Aho-Corasick) ---
+    {
+        const char *text = "foo bar baz foo bar";
+        const char *ac_patterns[] = {"foo", "bar"};
+        size_t ac_pattern_lens[] = {3, 3};
+        search_params_t params = {
+            .patterns = ac_patterns,
+            .pattern_lens = ac_pattern_lens,
+            .num_patterns = 2,
+            .case_sensitive = true,
+            .use_regex = false,
+            .track_positions = false,
+            .count_lines_mode = false,
+            .count_matches_mode = false,
+            .compiled_regex = NULL,
+            .max_count = SIZE_MAX};
+        TEST_ASSERT(aho_corasick_search(&params, text, strlen(text), NULL) == 4, "Aho-Corasick: finds all 'foo' and 'bar'");
+    }
+
+    // --- Binary data (should not match printable pattern) ---
+    {
+        char binary_data[8] = {0, 1, 2, 3, 4, 5, 6, 7};
+        search_params_t params = create_literal_params("abc", true, false, false);
+        TEST_ASSERT(boyer_moore_search(&params, binary_data, sizeof(binary_data), NULL) == 0, "BM: no match in binary data");
+        cleanup_params(&params);
+    }
+
+    // --- Pattern at chunk boundary (simulate chunked search) ---
+    {
+        const char *text = "xxxxPATTERNyyyy";
+        size_t len = strlen(text);
+        search_params_t params = create_literal_params("PATTERN", true, false, false);
+        // Simulate two chunks: first chunk ends before pattern, second chunk starts at pattern
+        TEST_ASSERT(boyer_moore_search(&params, text, 8, NULL) == 0, "BM: no match in first chunk");
+        TEST_ASSERT(boyer_moore_search(&params, text + 4, len - 4, NULL) == 1, "BM: match in second chunk");
+        cleanup_params(&params);
+    }
+
+    // --- Overlapping patterns with -o mode ---
+    {
+        const char *text = "aaaa";
+        search_params_t params = create_literal_params("aa", true, false, true);
+        params.track_positions = true;
+        match_result_t *result = match_result_init(4);
+        uint64_t count = boyer_moore_search(&params, text, strlen(text), result);
+        TEST_ASSERT(count == 3, "-o mode: overlapping 'aa' in 'aaaa' (BM)");
+        match_result_free(result);
+        cleanup_params(&params);
+    }
+
+    // --- Whole word boundaries at start/end of string ---
+    {
+        const char *text = "word anotherword word";
+        search_params_t params = create_literal_params("word", true, false, false);
+        params.whole_word = true;
+        params.track_positions = true;
+        match_result_t *result = match_result_init(4);
+        uint64_t count = boyer_moore_search(&params, text, strlen(text), result);
+        TEST_ASSERT(count == 2, "Whole word: matches at start and end only");
+        match_result_free(result);
+        cleanup_params(&params);
+    }
+}
+
 /* ========================================================================= */
 /* Main Test Runner                              */
 /* ========================================================================= */
@@ -932,6 +1017,9 @@ int main(void)
     test_report_limit_new();
     test_max_count_new(); // Add call to the new test function
     test_multithreading_placeholder_new();
+
+    // Add additional edge case tests
+    test_additional_cases();
 
     // Run tests from other files
     run_regex_tests();
