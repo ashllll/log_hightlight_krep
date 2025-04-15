@@ -3,7 +3,18 @@
 ![Version](https://img.shields.io/badge/version-1.0.0-blue)
 ![License](https://img.shields.io/badge/license-BSD-green)
 
-`krep` is an optimized string search utility designed for maximum throughput and efficiency when processing large files and directories. It's built with performance in mind, offering multiple search algorithms and SIMD acceleration when available.
+`krep` is an optimized string search utility designed for maximum throughput and efficiency when processing large files and directories. It is built with performance in mind, offering multiple search algorithms and SIMD acceleration when available.
+
+> **Note:**  
+> Krep is not intended to be a full replacement or direct competitor to feature-rich tools like `grep` or `ripgrep`. Instead, it aims to be a minimal, efficient, and pragmatic tool focused on speed and simplicity.  
+>  
+> Krep provides the essential features needed for fast searching, without the extensive options and complexity of more comprehensive search utilities. Its design philosophy is to deliver the fastest possible search for the most common use cases, with a clean and minimal interface.
+
+## The Story Behind the Name
+
+The name "krep" has an interesting origin. It is inspired by the Icelandic word "kreppan," which means "to grasp quickly" or "to catch firmly." I came across this word while researching efficient techniques for pattern recognition.
+
+Just as skilled fishers identify patterns in the water to locate fish quickly, I designed "krep" to find patterns in text with maximum efficiency. The name is also short and easy to remember—perfect for a command-line utility that users might type hundreds of times per day.
 
 ## Key Features
 
