@@ -169,7 +169,8 @@ ac_trie_t *ac_trie_build(const search_params_t *params)
     ac_node_t **queue = malloc(trie->num_patterns * 256 * sizeof(ac_node_t *)); // Generous upper bound
     if (!queue)
     {
-        ac_trie_free(trie);
+        perror("Failed to allocate queue for Aho-Corasick BFS");
+        ac_trie_free(trie); // Free the partially built trie
         return NULL;
     }
 

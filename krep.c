@@ -61,14 +61,16 @@ static bool is_repetitive_pattern(const char *pattern, size_t pattern_len);
 
 // Constants
 #define MAX_PATTERN_LENGTH 1024
-#define DEFAULT_THREAD_COUNT 0                // 0 means use available cores
-#define MIN_CHUNK_SIZE (4 * 1024 * 1024)      // 4MB minimum chunk size for better threading performance
-#define ADAPTIVE_THREAD_FILE_SIZE_THRESHOLD 0 // Was (MIN_CHUNK_SIZE * 2)
-#define VERSION "1.0.3"                       // Incremented version
+#define DEFAULT_THREAD_COUNT 0
+#define MIN_CHUNK_SIZE (4 * 1024 * 1024)
+#define SINGLE_THREAD_FILE_SIZE_THRESHOLD MIN_CHUNK_SIZE
+#define ADAPTIVE_THREAD_FILE_SIZE_THRESHOLD 0
+#define VERSION "1.0.0"
 #ifndef PATH_MAX
 #define PATH_MAX 4096
 #endif
-#define BINARY_CHECK_BUFFER_SIZE 1024 // Bytes to check for binary content
+#define BINARY_CHECK_BUFFER_SIZE 1024  // Bytes to check for binary content
+#define MAX_PATTERN_FILE_LINE_LEN 2048 // Max length for a pattern line read from file
 
 // Determine max pattern length usable by SIMD based on highest available instruction set
 // NOTE: Current SIMD implementations only support case-sensitive search.
