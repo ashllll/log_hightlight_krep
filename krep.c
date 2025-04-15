@@ -1,7 +1,7 @@
 /* krep - A high-performance string search utility
  *
  * Author: Davide Santangelo (Original), Optimized Version
- * Version: 1.0.0
+ * Version: 1.0.1
  * Year: 2025
  *
  */
@@ -65,7 +65,7 @@ static bool is_repetitive_pattern(const char *pattern, size_t pattern_len);
 #define MIN_CHUNK_SIZE (4 * 1024 * 1024)
 #define SINGLE_THREAD_FILE_SIZE_THRESHOLD MIN_CHUNK_SIZE
 #define ADAPTIVE_THREAD_FILE_SIZE_THRESHOLD 0
-#define VERSION "1.0.0"
+#define VERSION "1.0.1"
 #ifndef PATH_MAX
 #define PATH_MAX 4096
 #endif
@@ -2715,6 +2715,7 @@ static bool should_skip_extension(const char *filename)
 // Check if a file appears to be binary
 static bool is_binary_file(const char *filepath)
 {
+    // Open file and check for binary content
     FILE *f = fopen(filepath, "rb");
     if (!f)
     {
@@ -2741,9 +2742,13 @@ int search_directory_recursive(const char *base_dir, const search_params_t *para
     DIR *dir = opendir(base_dir);
     if (!dir)
     {
-        // Silently ignore permission denied or not found errors, report others
-        if (errno != EACCES && errno != ENOENT)
+        // Better error handling: print more informative message for common errors
+        if (errno == EACCES)
         {
+            fprintf(stderr, "krep: %s: Permission denied\n", base_dir);
+        }
+        else if (errno != ENOENT)
+        { // Still silent for not found
             fprintf(stderr, "krep: %s: %s\n", base_dir, strerror(errno));
         }
         // Return 0 errors for permission/not found, 1 otherwise
@@ -2763,8 +2768,17 @@ int search_directory_recursive(const char *base_dir, const search_params_t *para
             continue;
         }
 
-        // Construct the full path for the entry
-        int path_len = snprintf(path_buffer, sizeof(path_buffer), "%s/%s", base_dir, entry->d_name);
+        // Construct the full path for the entry - more robust path joining
+        int path_len;
+        if (base_dir[strlen(base_dir) - 1] == '/')
+        {
+            path_len = snprintf(path_buffer, sizeof(path_buffer), "%s%s", base_dir, entry->d_name);
+        }
+        else
+        {
+            path_len = snprintf(path_buffer, sizeof(path_buffer), "%s/%s", base_dir, entry->d_name);
+        }
+
         // Check for path construction errors (e.g., path too long)
         if (path_len < 0 || (size_t)path_len >= sizeof(path_buffer))
         {
@@ -2800,11 +2814,19 @@ int search_directory_recursive(const char *base_dir, const search_params_t *para
         // If the entry is a regular file:
         else if (S_ISREG(entry_stat.st_mode))
         {
-            // Check if the file should be skipped based on extension or binary content
-            if (should_skip_extension(entry->d_name) || is_binary_file(path_buffer))
+            // Check if the file should be skipped based on extension
+            if (should_skip_extension(entry->d_name))
             {
                 continue; // Skip this file
             }
+
+            // Don't check binary files too aggressively as it might miss valid text files
+            // Only check files larger than a certain threshold
+            if (entry_stat.st_size > 1024 * 1024 && is_binary_file(path_buffer))
+            {
+                continue; // Skip this file - it's binary and large
+            }
+
             // Otherwise, search the file using search_file (which handles parallelism)
             int file_result = search_file(params, path_buffer, thread_count);
             // If search_file returns 2, it indicates an error
@@ -3761,15 +3783,30 @@ uint64_t simd_sse42_search(const search_params_t *params,
     size_t remaining_len = text_len;
 
     // Mode for _mm_cmpestri: compare strings, return index, positive polarity
-    const int cmp_mode = _SIDD_CMP_EQUAL_ORDERED | _SIDD_POSITIVE_POLARITY | _SIDD_LEAST_SIGNIFICANT;
+    // Using an enum for constant folding to work with optimizations off
+    enum
+    {
+        cmp_mode = _SIDD_CMP_EQUAL_ORDERED | _SIDD_POSITIVE_POLARITY | _SIDD_LEAST_SIGNIFICANT
+    };
 
     while (remaining_len >= pattern_len)
     {
         // Determine chunk size (max 16 bytes for _mm_cmpestri)
         size_t chunk_len = (remaining_len < 16) ? remaining_len : 16;
 
-        // Load text chunk into an XMM register
-        __m128i text_vec = _mm_loadu_si128((const __m128i *)current_pos);
+        // Load text chunk into an XMM register - SAFELY
+        __m128i text_vec;
+        if (chunk_len < 16)
+        {
+            // For smaller chunks, use a buffer to avoid reading past the end
+            char safe_buffer[16] = {0}; // Zero-initialized
+            memcpy(safe_buffer, current_pos, chunk_len);
+            text_vec = _mm_loadu_si128((const __m128i *)safe_buffer);
+        }
+        else
+        {
+            text_vec = _mm_loadu_si128((const __m128i *)current_pos);
+        }
 
         // Compare pattern against the text chunk
         // _mm_cmpestri returns the index of the first byte of the first match
@@ -3889,15 +3926,41 @@ uint64_t simd_avx2_search(const search_params_t *params,
 
     while (remaining_len >= 32) // Process in 32-byte chunks
     {
-        // Load 32 bytes of text
-        __m256i text_vec = _mm256_loadu_si256((const __m256i *)current_pos);
+        // Load 32 bytes of text - SAFELY
+        __m256i text_vec;
+        if (remaining_len < 32)
+        {
+            // For smaller chunks, use a buffer to avoid reading past the end
+            char safe_buffer[32] = {0}; // Zero-initialized
+            memcpy(safe_buffer, current_pos, remaining_len);
+            text_vec = _mm256_loadu_si256((const __m256i *)safe_buffer);
+        }
+        else
+        {
+            text_vec = _mm256_loadu_si256((const __m256i *)current_pos);
+        }
 
         // Compare first byte of pattern with text
         __m256i first_cmp = _mm256_cmpeq_epi8(first_byte_vec, text_vec);
 
         // Compare last byte of pattern with text shifted by pattern_len - 1
         // This requires loading potentially unaligned data for the last byte comparison
-        __m256i text_last_byte_vec = _mm256_loadu_si256((const __m256i *)(current_pos + pattern_len - 1));
+        // SAFELY handle this load too
+        __m256i text_last_byte_vec;
+        size_t last_byte_offset = pattern_len - 1;
+        size_t bytes_available = remaining_len > last_byte_offset ? remaining_len - last_byte_offset : 0;
+
+        if (bytes_available < 32)
+        {
+            char safe_buffer[32] = {0}; // Zero-initialized
+            size_t copy_size = bytes_available < remaining_len ? bytes_available : remaining_len;
+            memcpy(safe_buffer, current_pos + last_byte_offset, copy_size);
+            text_last_byte_vec = _mm256_loadu_si256((const __m256i *)safe_buffer);
+        }
+        else
+        {
+            text_last_byte_vec = _mm256_loadu_si256((const __m256i *)(current_pos + last_byte_offset));
+        }
         __m256i last_cmp = _mm256_cmpeq_epi8(last_byte_vec, text_last_byte_vec);
 
         // Combine the masks: a potential match starts where both first and last bytes match
