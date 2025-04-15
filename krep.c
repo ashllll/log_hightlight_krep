@@ -1158,70 +1158,57 @@ uint64_t boyer_moore_search(const search_params_t *params,
                             match_result_t *result) // For position tracking (can be NULL)
 {
     // --- Add max_count == 0 check ---
-    if (params->max_count == 0 && (params->count_lines_mode || params->track_positions)) // Check only if counting matters
+    if (params->max_count == 0 && (params->count_lines_mode || params->track_positions))
         return 0;
     // --- End add ---
 
-    uint64_t current_count = 0; // Use local counter for limit check
-    int bad_char_table[256];
+    const unsigned char *utext_start = (const unsigned char *)text_start;
     const unsigned char *search_pattern = (const unsigned char *)params->pattern;
     size_t pattern_len = params->pattern_len;
     bool case_sensitive = params->case_sensitive;
     bool count_lines_mode = params->count_lines_mode;
     bool track_positions = params->track_positions;
-    size_t max_count = params->max_count; // Get max_count
+    size_t max_count = params->max_count;
 
     if (pattern_len == 0 || text_len < pattern_len)
-        return 0; // Cannot find an empty or too-long pattern
+        return 0;
 
+    int bad_char_table[256];
     prepare_bad_char_table(search_pattern, pattern_len, bad_char_table, case_sensitive);
 
-    size_t i = 0; // Current potential start position in text
-    const unsigned char *utext_start = (const unsigned char *)text_start;
-    size_t last_counted_line_start = SIZE_MAX; // For -c mode tracking
+    uint64_t current_count = 0;
+    size_t last_counted_line_start = SIZE_MAX;
+    size_t i = 0;
+    size_t search_limit = text_len - pattern_len + 1;
 
-    // Loop until the potential start position 'i' allows the pattern to fit within text_len
-    while (i <= text_len - pattern_len)
+    while (i < search_limit)
     {
-        // Character in text corresponding to the last character of the pattern
         unsigned char tc_last = utext_start[i + pattern_len - 1];
         unsigned char pc_last = search_pattern[pattern_len - 1];
-        bool last_char_match;
 
-        // Check if the last characters match (case-sensitive or insensitive)
-        if (case_sensitive)
-        {
-            last_char_match = (tc_last == pc_last);
-        }
-        else
-        {
-            last_char_match = (lower_table[tc_last] == lower_table[pc_last]);
-        }
+        bool last_char_match = case_sensitive
+                                   ? (tc_last == pc_last)
+                                   : (lower_table[tc_last] == lower_table[pc_last]);
 
-        // If the last character matches, check the rest of the pattern
-        if (last_char_match) // Check full pattern only if needed (removed && pattern_len > 1)
+        if (last_char_match)
         {
-            // Compare the full pattern
-            bool full_match = true; // Assume match if pattern_len is 1
+            bool full_match = true;
             if (pattern_len > 1)
             {
                 if (case_sensitive)
                 {
-                    // Use memcmp for potential speedup
                     full_match = (memcmp(utext_start + i, search_pattern, pattern_len - 1) == 0);
                 }
                 else
                 {
-                    // Use helper for case-insensitive comparison
                     full_match = memory_equals_case_insensitive(utext_start + i, search_pattern, pattern_len - 1);
                 }
             }
 
             if (full_match)
             {
-                // --- Match Found ---
                 bool count_incremented_this_match = false;
-                if (count_lines_mode) // -c mode
+                if (count_lines_mode)
                 {
                     size_t line_start = find_line_start(text_start, text_len, i);
                     if (line_start != last_counted_line_start)
@@ -1231,48 +1218,32 @@ uint64_t boyer_moore_search(const search_params_t *params,
                         count_incremented_this_match = true;
                     }
                 }
-                else // Not -c mode (default, -o, or internal match counting)
+                else
                 {
-                    current_count++; // Increment match count
+                    current_count++;
                     count_incremented_this_match = true;
-                    if (track_positions && result)
+                    if (track_positions && result && current_count <= max_count)
                     {
-                        // Add position only if tracking and within limit
-                        // Check <= because current_count was just incremented
-                        if (current_count <= max_count)
+                        if (!match_result_add(result, i, i + pattern_len))
                         {
-                            if (!match_result_add(result, i, i + pattern_len))
-                            {
-                                // Handle allocation failure if necessary (e.g., log error)
-                                // For now, just stop adding positions
-                                fprintf(stderr, "Warning: Failed to add match position, potential memory issue.\n");
-                            }
+                            // Warning: allocation failed, ignore location
                         }
                     }
                 }
 
-                // Check max_count limit *after* processing the match
                 if (count_incremented_this_match && current_count >= max_count)
-                {
-                    break; // Stop searching this chunk/file
-                }
+                    break;
 
-                // Shift by 1 after a match to find overlapping patterns correctly in BM
-                i++;
-                continue; // Skip the bad character shift for this iteration
+                i++; // Shift by 1 to find overlapping matches
+                continue;
             }
         }
 
-        // --- No Match or Partial Match ---
-        // Calculate shift using the bad character rule
         unsigned char bad_char = utext_start[i + pattern_len - 1];
         int shift = bad_char_table[case_sensitive ? bad_char : lower_table[bad_char]];
-
-        // Ensure shift is at least 1 to prevent infinite loops
         i += (shift > 0 ? shift : 1);
     }
 
-    // Return the count (lines or matches depending on mode)
     return current_count;
 }
 
