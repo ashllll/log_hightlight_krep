@@ -67,6 +67,11 @@ $(TEST_TARGET): $(TEST_OBJS_MAIN) $(TEST_OBJS_TEST)
 test: $(TEST_TARGET)
 	./$(TEST_TARGET)
 
+test_directory: test/test_directory.c krep.c aho_corasick.c
+	$(CC) $(CFLAGS) -DTESTING -o $@ $^ $(LDFLAGS)
+
+all-tests: test_basic test_krep test_regex test_multiple_patterns test_directory
+
 # --- Installation ---
 install: $(TARGET)
 	install -d $(DESTDIR)$(BINDIR)

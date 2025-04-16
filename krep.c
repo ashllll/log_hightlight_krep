@@ -1,7 +1,7 @@
 /* krep - A high-performance string search utility
  *
  * Author: Davide Santangelo (Original), Optimized Version
- * Version: 1.0.1
+ * Version: 1.0.2
  * Year: 2025
  *
  */
@@ -65,7 +65,7 @@ static bool is_repetitive_pattern(const char *pattern, size_t pattern_len);
 #define MIN_CHUNK_SIZE (4 * 1024 * 1024)
 #define SINGLE_THREAD_FILE_SIZE_THRESHOLD MIN_CHUNK_SIZE
 #define ADAPTIVE_THREAD_FILE_SIZE_THRESHOLD 0
-#define VERSION "1.0.1"
+#define VERSION "1.0.2"
 #ifndef PATH_MAX
 #define PATH_MAX 4096
 #endif
@@ -114,8 +114,20 @@ match_result_t *match_result_init(uint64_t initial_capacity)
         perror("malloc failed for match_result_t");
         return NULL;
     }
+
+    // Check for overflow cases before allocating memory for positions
     if (initial_capacity == 0)
+    {
         initial_capacity = 16; // Default initial size
+    }
+    else if (initial_capacity > SIZE_MAX / sizeof(match_position_t))
+    {
+        // This allocation would overflow, refuse to proceed
+        fprintf(stderr, "Error: Requested capacity too large for match_result_init\n");
+        free(result);
+        return NULL;
+    }
+
     result->positions = malloc(initial_capacity * sizeof(match_position_t));
     if (!result->positions)
     {
@@ -123,6 +135,7 @@ match_result_t *match_result_init(uint64_t initial_capacity)
         free(result);
         return NULL;
     }
+
     result->count = 0;
     result->capacity = initial_capacity;
     return result;
