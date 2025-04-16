@@ -3318,15 +3318,9 @@ uint64_t memchr_search(const search_params_t *params,
                         local_buffer[buffer_count].end_offset = match_pos + 1;
                         buffer_count++;
                     }
-                    else
-                    { // Flush buffer first
-                        for (size_t i = 0; i < buffer_count; i++)
-                        {
-                            match_result_add(result, local_buffer[i].start_offset, local_buffer[i].end_offset);
-                        }
-                        buffer_count = 0;
-                        // Add final match directly
-                        match_result_add(result, match_pos, match_pos + 1);
+                    else if (!match_result_add(result, match_pos, match_pos + 1))
+                    {
+                        fprintf(stderr, "Warning: Failed to add SSE4.2 match position.\n");
                     }
                 }
                 break; // Limit reached
@@ -3830,62 +3824,102 @@ uint64_t simd_sse42_search(const search_params_t *params,
         {
             // Match found within the current 16-byte window at 'index'
             size_t match_start_offset = (current_pos - text_start) + index;
-            // Whole word check
-            if (params->whole_word && !is_whole_word_match(text_start, text_len, match_start_offset, match_start_offset + pattern_len))
-            {
-                current_pos += index + 1;
-                remaining_len -= index + 1;
-                continue;
-            }
 
-            bool count_incremented_this_match = false;
+            // Fast path: skip whole word check if not needed
+            if (!params->whole_word || is_whole_word_match(text_start, text_len, match_start_offset, match_start_offset + pattern_len))
+            {
+                bool count_incremented_this_match = false;
 
-            if (count_lines_mode)
-            {
-                size_t line_start = find_line_start(text_start, text_len, match_start_offset);
-                if (line_start != last_counted_line_start)
+                if (count_lines_mode)
                 {
-                    current_count++;
-                    last_counted_line_start = line_start;
-                    count_incremented_this_match = true;
-                }
-            }
-            else
-            {
-                current_count++;
-                count_incremented_this_match = true;
-                if (track_positions && result)
-                {
-                    if (current_count <= max_count)
+                    // Cache the line start position to avoid repeated calculations
+                    size_t line_start = find_line_start(text_start, text_len, match_start_offset);
+                    if (line_start != last_counted_line_start)
                     {
-                        if (!match_result_add(result, match_start_offset, match_start_offset + pattern_len))
+                        // Check max count before incrementing
+                        if (current_count >= max_count)
+                            break;
+
+                        current_count++;
+                        last_counted_line_start = line_start;
+                        count_incremented_this_match = true;
+
+                        // Optimize: advance to next line after counting this one
+                        size_t line_end = find_line_end(text_start, text_len, line_start);
+                        if (line_end < text_len)
                         {
-                            fprintf(stderr, "Warning: Failed to add SSE4.2 match position.\n");
-                            // Consider stopping if adding fails critically
+                            size_t advance = line_end + 1 - (current_pos + index);
+                            if (advance > 0)
+                            {
+                                current_pos += advance;
+                                remaining_len -= advance;
+                                continue;
+                            }
                         }
                     }
                 }
+                else
+                {
+                    // Check max count before incrementing
+                    if (current_count >= max_count)
+                        break;
+
+                    current_count++;
+                    count_incremented_this_match = true;
+
+                    if (track_positions && result)
+                    {
+                        // Add position only if still within max_count
+                        if (current_count <= max_count)
+                        {
+                            // Minimize error checking in tight loop for better performance
+                            if (result->count < result->capacity)
+                            {
+                                result->positions[result->count].start_offset = match_start_offset;
+                                result->positions[result->count].end_offset = match_start_offset + pattern_len;
+                                result->count++;
+                            }
+                            else if (!match_result_add(result, match_start_offset, match_start_offset + pattern_len))
+                            {
+                                fprintf(stderr, "Warning: Failed to add SSE4.2 match position.\n");
+                            }
+                        }
+                    }
+                }
+
+                // Early break if max count reached
+                if (count_incremented_this_match && current_count >= max_count)
+                {
+                    break;
+                }
             }
 
-            // Check max_count limit
-            if (count_incremented_this_match && current_count >= max_count)
-            {
-                break;
+            // More aggressive advancement strategy
+            // Advance to just after the match instead of just by one byte
+            size_t advance = index + 1;
+
+            // If not looking for overlapping matches, can advance by pattern length
+            if (!only_matching)
+            { // only_matching mode needs to find overlapping matches
+                advance = index + pattern_len;
+                // Ensure we don't advance too far if near end
+                if (advance > remaining_len)
+                    advance = remaining_len;
             }
 
-            // Advance position past the found match to find next potential match
-            size_t advance = index + 1; // Advance by at least 1 byte past the start of the match
             current_pos += advance;
             remaining_len -= advance;
         }
         else
         {
-            // No match found in this chunk. Advance past most of the chunk.
-            // Advance by 16 - pattern_len + 1 to ensure potential matches overlapping
-            // the boundary are caught in the next iteration.
-            size_t advance = (chunk_len > pattern_len) ? (chunk_len - pattern_len + 1) : 1;
+            // No match found in this chunk. Advance more aggressively.
+            // Jump by almost the full chunk size, leaving just enough overlap
+            // for potential matches that span chunk boundaries.
+            size_t advance = chunk_len > pattern_len ? chunk_len - pattern_len + 1 : 1;
+            // Ensure we don't advance beyond text bounds
             if (advance > remaining_len)
-                break; // Avoid infinite loop if remaining_len is small
+                advance = remaining_len;
+
             current_pos += advance;
             remaining_len -= advance;
         }
