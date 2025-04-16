@@ -1,7 +1,7 @@
 /* krep - A high-performance string search utility
  *
  * Author: Davide Santangelo (Original), Optimized Version
- * Version: 1.0.2
+ * Version: 1.0.4
  * Year: 2025
  *
  */
@@ -65,7 +65,7 @@ static bool is_repetitive_pattern(const char *pattern, size_t pattern_len);
 #define MIN_CHUNK_SIZE (4 * 1024 * 1024)
 #define SINGLE_THREAD_FILE_SIZE_THRESHOLD MIN_CHUNK_SIZE
 #define ADAPTIVE_THREAD_FILE_SIZE_THRESHOLD 0
-#define VERSION "1.0.2"
+#define VERSION "1.0.4"
 #ifndef PATH_MAX
 #define PATH_MAX 4096
 #endif
@@ -2035,7 +2035,14 @@ static void KREP_UNUSED cleanup_global_thread_pool()
 
 int search_file(const search_params_t *params, const char *filename, int requested_thread_count)
 {
-    search_params_t current_params = *params;    // Make a mutable copy we can modify
+    search_params_t current_params = *params; // Make a mutable copy we can modify
+
+    // Special case: for regex searches, force single-threaded mode
+    if (current_params.use_regex)
+    {
+        requested_thread_count = 1;
+    }
+
     int result_code = 1;                         // Default: no match found
     int fd = -1;                                 // File descriptor
     struct stat file_stat;                       // File stats
