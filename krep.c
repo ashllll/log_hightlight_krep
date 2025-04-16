@@ -1,7 +1,7 @@
 /* krep - A high-performance string search utility
  *
  * Author: Davide Santangelo (Original), Optimized Version
- * Version: 1.0.4
+ * Version: 1.0.5
  * Year: 2025
  *
  */
@@ -65,7 +65,7 @@ static bool is_repetitive_pattern(const char *pattern, size_t pattern_len);
 #define MIN_CHUNK_SIZE (4 * 1024 * 1024)
 #define SINGLE_THREAD_FILE_SIZE_THRESHOLD MIN_CHUNK_SIZE
 #define ADAPTIVE_THREAD_FILE_SIZE_THRESHOLD 0
-#define VERSION "1.0.4"
+#define VERSION "1.0.5"
 #ifndef PATH_MAX
 #define PATH_MAX 4096
 #endif
@@ -142,7 +142,7 @@ match_result_t *match_result_init(uint64_t initial_capacity)
 }
 
 // Add a match to the result structure, reallocating if necessary
-bool match_result_add(match_result_t *result, size_t start_offset, size_t end_offset)
+inline bool match_result_add(match_result_t *result, size_t start_offset, size_t end_offset)
 {
     if (!result)
         return false;
@@ -435,45 +435,22 @@ size_t print_matching_items(const char *filename, const char *text, size_t text_
 // --- Setup enhanced buffering ---
 // Use a larger stdout buffer than default to reduce syscalls
 #define STDOUT_BUFFER_SIZE (8 * 1024 * 1024) // 8MB stdout buffer
-    char *stdout_buf = malloc(STDOUT_BUFFER_SIZE);
-    if (stdout_buf)
-    {
-        // Use full buffering for stdout
-        if (setvbuf(stdout, stdout_buf, _IOFBF, STDOUT_BUFFER_SIZE) != 0)
-        {
-            // Non-fatal error, proceed with default buffering
-            free(stdout_buf);
-            stdout_buf = NULL;
-        }
-    }
+    static char stdout_buf[STDOUT_BUFFER_SIZE];
+    setvbuf(stdout, stdout_buf, _IOFBF, STDOUT_BUFFER_SIZE);
 
 // --- Preallocate reusable line buffer for formatting ---
-#define LINE_BUFFER_INITIAL_SIZE (512 * 1024) // Start with 512KB (doubled from original)
+#define LINE_BUFFER_INITIAL_SIZE (512 * 1024) // Start with 512KB
     char *line_buffer = malloc(LINE_BUFFER_INITIAL_SIZE);
-    size_t line_buffer_capacity = line_buffer ? LINE_BUFFER_INITIAL_SIZE : 0;
     if (!line_buffer)
     {
-        perror("Failed to allocate initial line buffer");
-        if (stdout_buf)
-        {
-            free(stdout_buf);
-        }
-        return 0; // Cannot proceed without line buffer
+        perror("malloc failed for line buffer");
+        return 0;
     }
+    size_t line_buffer_capacity = LINE_BUFFER_INITIAL_SIZE;
 
 // --- Preallocate match position storage ---
 #define MAX_MATCHES_PER_LINE 2048 // Doubled from original to handle more dense matches
-    match_position_t *line_match_positions = malloc(MAX_MATCHES_PER_LINE * sizeof(match_position_t));
-    if (!line_match_positions)
-    {
-        perror("Failed to allocate line match positions buffer");
-        free(line_buffer);
-        if (stdout_buf)
-        {
-            free(stdout_buf);
-        }
-        return 0; // Cannot proceed
-    }
+    static match_position_t line_match_positions[MAX_MATCHES_PER_LINE];
 
     // --- Precompute constant string lengths ---
     // Cache color codes and their lengths for better performance
@@ -495,18 +472,7 @@ size_t print_matching_items(const char *filename, const char *text, size_t text_
     {
 // Use a larger batch buffer for aggregating output before system calls
 #define O_BATCH_BUFFER_SIZE (8 * 1024 * 1024) // 8MB batch buffer (doubled from original)
-        char *o_batch_buffer = malloc(O_BATCH_BUFFER_SIZE);
-        if (!o_batch_buffer)
-        {
-            perror("Failed to allocate -o batch buffer");
-            free(line_match_positions);
-            free(line_buffer);
-            if (stdout_buf)
-            {
-                free(stdout_buf);
-            }
-            return 0; // Cannot proceed
-        }
+        static char o_batch_buffer[O_BATCH_BUFFER_SIZE];
         size_t o_batch_pos = 0; // Current position in the batch buffer
 
         // --- Fast line number tracking ---
@@ -738,7 +704,6 @@ size_t print_matching_items(const char *filename, const char *text, size_t text_
         }
 
         // Free resources
-        free(o_batch_buffer);
         if (newline_positions)
         {
             free(newline_positions);
@@ -785,14 +750,8 @@ size_t print_matching_items(const char *filename, const char *text, size_t text_
 // --- Create a line batch buffer for full line mode ---
 // This buffer aggregates multiple formatted lines before writing to stdout
 #define LINE_BATCH_BUFFER_SIZE (8 * 1024 * 1024) // 8MB for batch output
-        char *line_batch_buffer = malloc(LINE_BATCH_BUFFER_SIZE);
+        static char line_batch_buffer[LINE_BATCH_BUFFER_SIZE];
         size_t line_batch_pos = 0;
-
-        if (!line_batch_buffer)
-        {
-            // Not fatal, fall back to direct output without batching
-            fprintf(stderr, "Warning: Failed to allocate line batch buffer, performance may be reduced\n");
-        }
 
         // Iterate through matches, processing line by line
         uint64_t i = 0;
@@ -881,7 +840,7 @@ size_t print_matching_items(const char *filename, const char *text, size_t text_
             if (filename_prefix_len > 0)
             {
                 // Ensure capacity for prefix
-                if (!ensure_line_buffer_capacity(&line_buffer, &line_buffer_capacity, buffer_pos, filename_prefix_len))
+                if (!ensure_line_buffer_capacity((char **)&line_buffer, &line_buffer_capacity, buffer_pos, filename_prefix_len))
                 {
                     goto line_format_error;
                 }
@@ -891,7 +850,7 @@ size_t print_matching_items(const char *filename, const char *text, size_t text_
             else if (color_output_enabled)
             {
                 // If no filename, but color is on, start the line with the default text color
-                if (!ensure_line_buffer_capacity(&line_buffer, &line_buffer_capacity, buffer_pos, len_color_text))
+                if (!ensure_line_buffer_capacity((char **)&line_buffer, &line_buffer_capacity, buffer_pos, len_color_text))
                 {
                     goto line_format_error;
                 }
@@ -918,7 +877,7 @@ size_t print_matching_items(const char *filename, const char *text, size_t text_
                 if (k_start > current_pos_on_line)
                 {
                     size_t len_before = k_start - current_pos_on_line;
-                    if (!ensure_line_buffer_capacity(&line_buffer, &line_buffer_capacity, buffer_pos, len_before))
+                    if (!ensure_line_buffer_capacity((char **)&line_buffer, &line_buffer_capacity, buffer_pos, len_before))
                     {
                         goto line_format_error;
                     }
@@ -934,7 +893,7 @@ size_t print_matching_items(const char *filename, const char *text, size_t text_
                     // Need space for start color code and end color code (back to text color)
                     required_for_match += len_color_match + len_color_text;
                 }
-                if (!ensure_line_buffer_capacity(&line_buffer, &line_buffer_capacity, buffer_pos, required_for_match))
+                if (!ensure_line_buffer_capacity((char **)&line_buffer, &line_buffer_capacity, buffer_pos, required_for_match))
                 {
                     goto line_format_error;
                 }
@@ -962,7 +921,7 @@ size_t print_matching_items(const char *filename, const char *text, size_t text_
             if (current_pos_on_line < line_end)
             {
                 size_t len_after = line_end - current_pos_on_line;
-                if (!ensure_line_buffer_capacity(&line_buffer, &line_buffer_capacity, buffer_pos, len_after))
+                if (!ensure_line_buffer_capacity((char **)&line_buffer, &line_buffer_capacity, buffer_pos, len_after))
                 {
                     goto line_format_error;
                 }
@@ -976,7 +935,7 @@ size_t print_matching_items(const char *filename, const char *text, size_t text_
             {
                 required_for_end += len_color_reset;
             }
-            if (!ensure_line_buffer_capacity(&line_buffer, &line_buffer_capacity, buffer_pos, required_for_end))
+            if (!ensure_line_buffer_capacity((char **)&line_buffer, &line_buffer_capacity, buffer_pos, required_for_end))
             {
                 goto line_format_error;
             }
@@ -991,27 +950,18 @@ size_t print_matching_items(const char *filename, const char *text, size_t text_
             buffer_pos += required_for_end; // Update total buffer position
 
             // --- Efficient batch output handling ---
-            if (line_batch_buffer)
+            if (line_batch_pos + buffer_pos > LINE_BATCH_BUFFER_SIZE)
             {
-                // Check if line will fit in batch buffer, flush if needed
-                if (line_batch_pos + buffer_pos > LINE_BATCH_BUFFER_SIZE)
+                if (fwrite(line_batch_buffer, 1, line_batch_pos, stdout) != line_batch_pos)
                 {
-                    if (fwrite(line_batch_buffer, 1, line_batch_pos, stdout) != line_batch_pos)
-                    {
-                        perror("Error writing line batch buffer to stdout");
-                    }
-                    line_batch_pos = 0;
+                    perror("Error writing line batch buffer to stdout");
                 }
+                line_batch_pos = 0;
+            }
 
-                // Copy formatted line to batch buffer
-                memcpy(line_batch_buffer + line_batch_pos, line_buffer, buffer_pos);
-                line_batch_pos += buffer_pos;
-            }
-            else
-            {
-                // Direct output if batch buffer not available
-                fwrite(line_buffer, 1, buffer_pos, stdout);
-            }
+            // Copy formatted line to batch buffer
+            memcpy(line_batch_buffer + line_batch_pos, line_buffer, buffer_pos);
+            line_batch_pos += buffer_pos;
 
             // Update tracking variables
             items_printed_count++;                // Increment after successfully printing/batching a line
@@ -1031,25 +981,15 @@ size_t print_matching_items(const char *filename, const char *text, size_t text_
         }
 
         // Flush any remaining content in the line batch buffer
-        if (line_batch_buffer && line_batch_pos > 0)
+        if (line_batch_pos > 0)
         {
             fwrite(line_batch_buffer, 1, line_batch_pos, stdout);
         }
-
-        free(line_batch_buffer);
     }
 
     // --- Cleanup ---
-    free(line_buffer);
-    free(line_match_positions);
-
-    // Flush any remaining buffered output and restore default buffering
     fflush(stdout);
-    if (stdout_buf)
-    {
-        setvbuf(stdout, NULL, _IOLBF, 0); // Reset to default line buffering
-        free(stdout_buf);
-    }
+    free(line_buffer);
 
     return items_printed_count;
 }

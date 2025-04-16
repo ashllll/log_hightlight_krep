@@ -6,8 +6,9 @@ PREFIX ?= /usr/local
 BINDIR = $(PREFIX)/bin
 
 CC = gcc
-CFLAGS = -Wall -Wextra -O3 -std=c11 -pthread -D_GNU_SOURCE -D_DEFAULT_SOURCE
-LDFLAGS = -pthread
+CFLAGS = -Wall -Wextra -O3 -ffast-math -std=c11 -pthread -D_GNU_SOURCE -D_DEFAULT_SOURCE \
+         -flto
+LDFLAGS = -pthread -flto
 
 # Detect architecture for SIMD flags (basic example)
 ARCH := $(shell uname -m)
