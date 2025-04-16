@@ -1893,7 +1893,7 @@ int search_string(const search_params_t *params, const char *text)
                 if (!tmp)
                 {
                     fprintf(stderr, "krep: Failed to allocate memory for regex pattern.\n");
-                    goto cleanup;
+                    return 2;
                 }
                 sprintf(tmp, "\\b%s\\b", current_params.patterns[0]);
                 regex_to_compile = tmp;
@@ -3848,7 +3848,9 @@ uint64_t simd_sse42_search(const search_params_t *params,
                         size_t line_end = find_line_end(text_start, text_len, line_start);
                         if (line_end < text_len)
                         {
-                            size_t advance = line_end + 1 - (current_pos + index);
+                            // Convert to offsets from text_start to fix pointer arithmetic
+                            size_t current_offset = (current_pos - text_start) + index;
+                            size_t advance = (line_end + 1) - current_offset;
                             if (advance > 0)
                             {
                                 current_pos += advance;
