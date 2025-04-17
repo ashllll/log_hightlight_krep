@@ -1,7 +1,7 @@
 /* krep - A high-performance string search utility
  *
  * Author: Davide Santangelo (Original), Optimized Version
- * Version: 1.0.6
+ * Version: 1.1.0
  * Year: 2025
  *
  */
@@ -65,7 +65,7 @@ static bool is_repetitive_pattern(const char *pattern, size_t pattern_len);
 #define MIN_CHUNK_SIZE (4 * 1024 * 1024)
 #define SINGLE_THREAD_FILE_SIZE_THRESHOLD MIN_CHUNK_SIZE
 #define ADAPTIVE_THREAD_FILE_SIZE_THRESHOLD 0
-#define VERSION "1.0.6"
+#define VERSION "1.1.0"
 #ifndef PATH_MAX
 #define PATH_MAX 4096
 #endif
@@ -1200,7 +1200,10 @@ uint64_t boyer_moore_search(const search_params_t *params,
 
                 unsigned char bad = utext_start[i + pattern_len - 1];
                 int shift_val = bad_char_table[bad];
-                i += shift_val;
+                if (only_matching && !params->count_lines_mode)
+                    i += pattern_len;
+                else
+                    i += shift_val;
                 continue;
             }
         }
@@ -1218,116 +1221,77 @@ uint64_t boyer_moore_search(const search_params_t *params,
 uint64_t regex_search(const search_params_t *params,
                       const char *text_start,
                       size_t text_len,
-                      match_result_t *result) // For position tracking (can be NULL)
+                      match_result_t *result)
 {
-    if (params->max_count == 0 && (params->count_lines_mode || params->track_positions))
+    // 1) If limit is zero, no matches.
+    if (params->max_count == 0)
         return 0;
-    if (!params->compiled_regex || text_len == 0)
+
+    // 2) Must have a compiled regex.
+    if (!params->compiled_regex)
+        return 0;
+
+    // 3) Special‐case empty haystack: allow zero‐length match like ^$
+    if (text_len == 0)
     {
-        // Special case: If the text is empty but the regex matches the empty string
-        if (text_len == 0 && params->compiled_regex)
+        regmatch_t m;
+        if (regexec(params->compiled_regex, "", 1, &m, 0) == 0)
         {
-            // Test if the regex matches an empty string (like ^$)
-            regmatch_t pmatch[1];
-            if (regexec(params->compiled_regex, "", 1, pmatch, 0) == 0)
-            {
-                // The regex matches the empty string
-                if (params->track_positions && result)
-                {
-                    match_result_add(result, 0, 0);
-                }
-                return 1; // Return 1 match for empty string regex (e.g., ^$)
-            }
+            // count‐lines vs track_positions
+            if (params->count_lines_mode)
+                return 1;
+            if (params->track_positions && result)
+                match_result_add(result, 0, 0);
+            return 1;
         }
         return 0;
     }
 
-    uint64_t current_count = 0;
-    bool count_lines_mode = params->count_lines_mode;
-    bool track_positions = params->track_positions;
-    size_t max_count = params->max_count;
     const regex_t *regex = params->compiled_regex;
-    regmatch_t pmatch[1]; // We only need the overall match bounds (pmatch[0])
-    const char *current_pos = text_start;
-    size_t remaining_len = text_len;
-    size_t last_counted_line_start = SIZE_MAX;
+    regmatch_t pmatch[1];
+    int base_eflags = REG_STARTEND | REG_NEWLINE | (params->case_sensitive ? 0 : REG_ICASE);
+    const char *cur = text_start;
+    size_t rem = text_len;
+    size_t last_line = SIZE_MAX;
+    uint64_t count = 0;
 
-    while (remaining_len > 0)
+    while (rem > 0)
     {
-        // REG_NOTBOL: The first character is not the beginning of a line.
-        // REG_NOTEOL: The last character is not the end of a line.
-        // We adjust flags based on whether current_pos is at the very start.
-        int eflags = (current_pos == text_start) ? 0 : REG_NOTBOL;
+        pmatch[0].rm_so = 0;
+        pmatch[0].rm_eo = rem;
+        int eflags = base_eflags | ((cur == text_start) ? 0 : REG_NOTBOL);
+        if (regexec(regex, cur, 1, pmatch, eflags) != 0)
+            break;
 
-        if (regexec(regex, current_pos, 1, pmatch, eflags) == 0)
+        size_t so = pmatch[0].rm_so, eo = pmatch[0].rm_eo;
+        size_t start = (cur - text_start) + so;
+        size_t end = (cur - text_start) + eo;
+
+        if (params->count_lines_mode)
         {
-            // Match found
-            size_t match_start_offset = (current_pos - text_start) + pmatch[0].rm_so;
-            size_t match_end_offset = (current_pos - text_start) + pmatch[0].rm_eo;
-
-            // --- Process Match ---
-            bool count_incremented_this_match = false;
-            if (count_lines_mode)
+            size_t line_start = find_line_start(text_start, text_len, start);
+            if (line_start != last_line)
             {
-                size_t line_start = find_line_start(text_start, text_len, match_start_offset);
-                if (line_start != last_counted_line_start)
-                {
-                    current_count++;
-                    last_counted_line_start = line_start;
-                    count_incremented_this_match = true;
-                }
-            }
-            else // Not -c mode
-            {
-                current_count++;
-                count_incremented_this_match = true;
-                if (track_positions && result)
-                {
-                    // Add position only if tracking and within limit
-                    if (current_count <= max_count)
-                    {
-                        if (!match_result_add(result, match_start_offset, match_end_offset))
-                        {
-                            fprintf(stderr, "Warning: Failed to add regex match position.\n");
-                        }
-                    }
-                }
-            }
-
-            // Check max_count limit *after* processing the match
-            if (count_incremented_this_match && current_count >= max_count)
-            {
-                break; // Stop searching
-            }
-
-            // Advance search position past the current match
-            // If the match has zero length (e.g., ^$), advance by one character
-            // to avoid infinite loops. Otherwise, advance past the end of the match.
-            size_t advance = (pmatch[0].rm_eo > 0) ? (size_t)pmatch[0].rm_eo : 1;
-
-            // Boundary check: ensure advance doesn't go past remaining_len
-            if (advance > remaining_len)
-            {
-                break; // Should not happen with valid regexec results, but safety first
-            }
-
-            current_pos += advance;
-            remaining_len -= advance;
-
-            // If we advanced zero or one char after a zero-length match at the end, break
-            if (remaining_len == 0 && advance <= 1 && pmatch[0].rm_so == pmatch[0].rm_eo)
-            {
-                break;
+                count++;
+                last_line = line_start;
             }
         }
         else
         {
-            // No more matches found in the remaining text
-            break;
+            count++;
+            if (params->track_positions && result)
+                match_result_add(result, start, end);
         }
+
+        if (count >= params->max_count)
+            break;
+
+        size_t adv = eo > 0 ? eo : 1;
+        cur += adv;
+        rem -= adv;
     }
 
-    return current_count;
+    return count;
 }
 
 // --- Knuth-Morris-Pratt (KMP) Algorithm ---
@@ -1979,13 +1943,7 @@ static void KREP_UNUSED cleanup_global_thread_pool()
 
 int search_file(const search_params_t *params, const char *filename, int requested_thread_count)
 {
-    search_params_t current_params = *params; // Make a mutable copy we can modify
-
-    // Special case: for regex searches, force single-threaded mode
-    if (current_params.use_regex)
-    {
-        requested_thread_count = 1;
-    }
+    search_params_t current_params = *params;
 
     int result_code = 1;                         // Default: no match found
     int fd = -1;                                 // File descriptor
@@ -2000,8 +1958,6 @@ int search_file(const search_params_t *params, const char *filename, int request
     int actual_thread_count = 0;                 // Number of threads to actually use
     uint64_t final_count = 0;                    // Total count of lines or matches
     size_t max_count = current_params.max_count; // Get max_count
-
-    // Rest of the function remains the same...
 
     // Validate patterns for literal search (not for regex)
     if (!current_params.use_regex)
@@ -3682,7 +3638,7 @@ uint64_t memchr_short_search(const search_params_t *params,
             }
         }
 
-        size_t advance = (potential_match - current_pos) + 1;
+        size_t advance = (potential_match - current_pos) + (only_matching ? pattern_len : 1);
         if (advance > remaining_len)
             break;
         current_pos += advance;
