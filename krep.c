@@ -1,7 +1,7 @@
 /* krep - A high-performance string search utility
  *
  * Author: Davide Santangelo (Original), Optimized Version
- * Version: 1.0.5
+ * Version: 1.0.6
  * Year: 2025
  *
  */
@@ -65,7 +65,7 @@ static bool is_repetitive_pattern(const char *pattern, size_t pattern_len);
 #define MIN_CHUNK_SIZE (4 * 1024 * 1024)
 #define SINGLE_THREAD_FILE_SIZE_THRESHOLD MIN_CHUNK_SIZE
 #define ADAPTIVE_THREAD_FILE_SIZE_THRESHOLD 0
-#define VERSION "1.0.5"
+#define VERSION "1.0.6"
 #ifndef PATH_MAX
 #define PATH_MAX 4096
 #endif
@@ -1166,7 +1166,9 @@ uint64_t boyer_moore_search(const search_params_t *params,
                 // Whole word check
                 if (params->whole_word && !is_whole_word_match(text_start, text_len, i, i + pattern_len))
                 {
-                    i++;
+                    unsigned char bad = utext_start[i + pattern_len - 1];
+                    int shift_val = bad_char_table[bad];
+                    i += shift_val;
                     continue;
                 }
                 bool count_incremented_this_match = false;
@@ -1196,14 +1198,16 @@ uint64_t boyer_moore_search(const search_params_t *params,
                 if (count_incremented_this_match && current_count >= max_count)
                     break;
 
-                i++; // Shift by 1 to find overlapping matches
+                unsigned char bad = utext_start[i + pattern_len - 1];
+                int shift_val = bad_char_table[bad];
+                i += shift_val;
                 continue;
             }
         }
 
-        unsigned char bad_char = utext_start[i + pattern_len - 1];
-        int shift = bad_char_table[case_sensitive ? bad_char : lower_table[bad_char]];
-        i += (shift > 0 ? shift : 1);
+        unsigned char bad = utext_start[i + pattern_len - 1];
+        int shift_val = bad_char_table[bad];
+        i += shift_val;
     }
 
     return current_count;
