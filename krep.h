@@ -1,7 +1,6 @@
 /* krep.h - Header file for krep utility (Optimized Version)
  *
- * Author: Davide Santangelo (Original), Optimized Version
- * Version: 1.1.1
+ * Author: Davide Santangelo
  * Year: 2025
  */
 

@@ -1,7 +1,6 @@
 /* krep - A high-performance string search utility
  *
- * Author: Davide Santangelo (Original), Optimized Version
- * Version: 1.1.1
+ * Author: Davide Santangelo
  * Year: 2025
  *
  */
@@ -65,7 +64,7 @@ static bool is_repetitive_pattern(const char *pattern, size_t pattern_len);
 #define MIN_CHUNK_SIZE (4 * 1024 * 1024)
 #define SINGLE_THREAD_FILE_SIZE_THRESHOLD MIN_CHUNK_SIZE
 #define ADAPTIVE_THREAD_FILE_SIZE_THRESHOLD 0
-#define VERSION "1.1.1"
+#define VERSION "1.1.2"
 #ifndef PATH_MAX
 #define PATH_MAX 4096
 #endif
@@ -826,36 +825,54 @@ size_t print_matching_items(const char *filename, const char *text, size_t text_
                         // Log warning if too many matches on one line
                         fprintf(stderr, "Warning: Exceeded MAX_MATCHES_PER_LINE (%d) on line starting at offset %zu in %s\n",
                                 MAX_MATCHES_PER_LINE, line_start, filename ? filename : "<stdin>");
-                        break; // Stop collecting matches for this line
+                        // Stop collecting matches for this line, but process the ones found so far
+                        break;
                     }
                 }
 
                 line_match_scan_idx++; // Move to the next potential match
             }
 
+            // --- Pre-calculate required buffer size for the line ---
+            size_t line_len = line_end - line_start;
+            size_t max_required_size = filename_prefix_len + line_len + 1; // Prefix + content + newline
+            if (color_output_enabled)
+            {
+                // Add space for color codes:
+                // - Initial text color (if no prefix)
+                // - Match color + text color for each match
+                // - Final reset color
+                max_required_size += (filename_prefix_len == 0 ? len_color_text : 0) +
+                                     (line_match_count * (len_color_match + len_color_text)) +
+                                     len_color_reset;
+            }
+
+            // --- Ensure line buffer capacity once ---
+            if (!ensure_line_buffer_capacity((char **)&line_buffer, &line_buffer_capacity, 0, max_required_size))
+            {
+                // Handle error: cannot allocate enough buffer space for the line
+                fprintf(stderr, "Error: Failed to ensure sufficient buffer capacity (%zu bytes) for line starting at offset %zu in %s\n",
+                        max_required_size, line_start, filename ? filename : "<stdin>");
+                // Skip processing this line and advance past its matches
+                i = line_match_scan_idx;
+                continue;
+            }
+
             // --- Format the current line with highlighting ---
-            size_t buffer_pos = 0; // Current position in line_buffer
+            size_t buffer_pos = 0;                 // Current position in line_buffer
+            char *current_write_ptr = line_buffer; // Use a direct pointer
 
             // Add filename prefix if applicable
             if (filename_prefix_len > 0)
             {
-                // Ensure capacity for prefix
-                if (!ensure_line_buffer_capacity((char **)&line_buffer, &line_buffer_capacity, buffer_pos, filename_prefix_len))
-                {
-                    goto line_format_error;
-                }
-                memcpy(line_buffer + buffer_pos, filename_prefix, filename_prefix_len);
-                buffer_pos += filename_prefix_len;
+                memcpy(current_write_ptr, filename_prefix, filename_prefix_len);
+                current_write_ptr += filename_prefix_len;
             }
             else if (color_output_enabled)
             {
                 // If no filename, but color is on, start the line with the default text color
-                if (!ensure_line_buffer_capacity((char **)&line_buffer, &line_buffer_capacity, buffer_pos, len_color_text))
-                {
-                    goto line_format_error;
-                }
-                memcpy(line_buffer + buffer_pos, color_text, len_color_text);
-                buffer_pos += len_color_text;
+                memcpy(current_write_ptr, color_text, len_color_text);
+                current_write_ptr += len_color_text;
             }
 
             // Iterate through the line, copying text segments and highlighted matches
@@ -871,47 +888,30 @@ size_t print_matching_items(const char *filename, const char *text, size_t text_
                 if (k_end > line_end)
                     k_end = line_end;
                 if (k_start >= k_end)
-                    continue;
+                    continue; // Skip zero-length or invalid matches
 
                 // 1. Copy text segment BEFORE the current match
                 if (k_start > current_pos_on_line)
                 {
                     size_t len_before = k_start - current_pos_on_line;
-                    if (!ensure_line_buffer_capacity((char **)&line_buffer, &line_buffer_capacity, buffer_pos, len_before))
-                    {
-                        goto line_format_error;
-                    }
-                    memcpy(line_buffer + buffer_pos, text + current_pos_on_line, len_before);
-                    buffer_pos += len_before;
+                    memcpy(current_write_ptr, text + current_pos_on_line, len_before);
+                    current_write_ptr += len_before;
                 }
 
                 // 2. Copy the highlighted MATCH segment
                 size_t match_len = k_end - k_start;
-                size_t required_for_match = match_len;
                 if (color_output_enabled)
                 {
-                    // Need space for start color code and end color code (back to text color)
-                    required_for_match += len_color_match + len_color_text;
+                    memcpy(current_write_ptr, color_match, len_color_match);
+                    current_write_ptr += len_color_match;
                 }
-                if (!ensure_line_buffer_capacity((char **)&line_buffer, &line_buffer_capacity, buffer_pos, required_for_match))
-                {
-                    goto line_format_error;
-                }
-
-                char *write_ptr = line_buffer + buffer_pos; // Pointer for this segment
+                memcpy(current_write_ptr, text + k_start, match_len);
+                current_write_ptr += match_len;
                 if (color_output_enabled)
                 {
-                    memcpy(write_ptr, color_match, len_color_match);
-                    write_ptr += len_color_match;
+                    memcpy(current_write_ptr, color_text, len_color_text); // Switch back to text color after match
+                    current_write_ptr += len_color_text;
                 }
-                memcpy(write_ptr, text + k_start, match_len);
-                write_ptr += match_len;
-                if (color_output_enabled)
-                {
-                    memcpy(write_ptr, color_text, len_color_text); // Switch back to text color after match
-                    write_ptr += len_color_text;
-                }
-                buffer_pos += required_for_match; // Update total buffer position
 
                 // Update the position marker within the original text line
                 current_pos_on_line = k_end;
@@ -921,47 +921,52 @@ size_t print_matching_items(const char *filename, const char *text, size_t text_
             if (current_pos_on_line < line_end)
             {
                 size_t len_after = line_end - current_pos_on_line;
-                if (!ensure_line_buffer_capacity((char **)&line_buffer, &line_buffer_capacity, buffer_pos, len_after))
-                {
-                    goto line_format_error;
-                }
-                memcpy(line_buffer + buffer_pos, text + current_pos_on_line, len_after);
-                buffer_pos += len_after;
+                memcpy(current_write_ptr, text + current_pos_on_line, len_after);
+                current_write_ptr += len_after;
             }
 
             // 4. Add final color reset and newline character
-            size_t required_for_end = 1; // For newline
             if (color_output_enabled)
             {
-                required_for_end += len_color_reset;
+                memcpy(current_write_ptr, color_reset, len_color_reset);
+                current_write_ptr += len_color_reset;
             }
-            if (!ensure_line_buffer_capacity((char **)&line_buffer, &line_buffer_capacity, buffer_pos, required_for_end))
-            {
-                goto line_format_error;
-            }
+            *current_write_ptr = '\n';
+            current_write_ptr++;
 
-            char *write_ptr = line_buffer + buffer_pos; // Pointer for this segment
-            if (color_output_enabled)
-            {
-                memcpy(write_ptr, color_reset, len_color_reset);
-                write_ptr += len_color_reset;
-            }
-            *write_ptr = '\n';
-            buffer_pos += required_for_end; // Update total buffer position
+            // Calculate final buffer position based on pointer arithmetic
+            buffer_pos = current_write_ptr - line_buffer;
 
             // --- Efficient batch output handling ---
+            // Check if the newly formatted line fits in the batch buffer
             if (line_batch_pos + buffer_pos > LINE_BATCH_BUFFER_SIZE)
             {
+                // Flush the current batch buffer before adding the new line
                 if (fwrite(line_batch_buffer, 1, line_batch_pos, stdout) != line_batch_pos)
                 {
                     perror("Error writing line batch buffer to stdout");
+                    // Consider how to handle this error; maybe stop processing?
                 }
-                line_batch_pos = 0;
+                line_batch_pos = 0; // Reset batch buffer position
             }
 
-            // Copy formatted line to batch buffer
-            memcpy(line_batch_buffer + line_batch_pos, line_buffer, buffer_pos);
-            line_batch_pos += buffer_pos;
+            // Copy formatted line to batch buffer (only if it fits after potential flush)
+            // This check prevents buffer overflow if a single line exceeds LINE_BATCH_BUFFER_SIZE
+            if (buffer_pos <= LINE_BATCH_BUFFER_SIZE)
+            {
+                memcpy(line_batch_buffer + line_batch_pos, line_buffer, buffer_pos);
+                line_batch_pos += buffer_pos;
+            }
+            else
+            {
+                // If a single line is too large, write it directly (or handle error)
+                fprintf(stderr, "Warning: Single line exceeds batch buffer size (%zu > %d). Writing directly.\n",
+                        buffer_pos, LINE_BATCH_BUFFER_SIZE);
+                if (fwrite(line_buffer, 1, buffer_pos, stdout) != buffer_pos)
+                {
+                    perror("Error writing oversized line directly to stdout");
+                }
+            }
 
             // Update tracking variables
             items_printed_count++;                // Increment after successfully printing/batching a line
@@ -969,21 +974,18 @@ size_t print_matching_items(const char *filename, const char *text, size_t text_
 
             // Advance the main loop index 'i' past all matches processed for this line
             i = line_match_scan_idx;
-            continue;
+            continue; // Continue to the next potential line
 
-        line_format_error:
-            // Handle errors during line formatting (e.g., buffer reallocation failure)
-            fprintf(stderr, "Error formatting line starting at offset %zu for file %s\n",
-                    line_start, filename ? filename : "<stdin>");
-            // Skip to the next line
-            i = line_match_scan_idx; // Skip past all matches on this line
-            continue;
+            // Removed line_format_error label and goto as buffer allocation is done upfront
         }
 
         // Flush any remaining content in the line batch buffer
         if (line_batch_pos > 0)
         {
-            fwrite(line_batch_buffer, 1, line_batch_pos, stdout);
+            if (fwrite(line_batch_buffer, 1, line_batch_pos, stdout) != line_batch_pos)
+            {
+                perror("Error writing final line batch buffer to stdout");
+            }
         }
     }
 
