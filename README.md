@@ -31,6 +31,16 @@ Just as skilled fishers identify patterns in the water to locate fish quickly, I
 
 ## Installation
 
+### Using Homebrew (macOS)
+
+If you are on macOS and have Homebrew installed, you can install `krep` easily:
+
+```bash
+brew install krep
+```
+
+### Building from Source
+
 ```bash
 # Clone the repository
 git clone https://github.com/davidesantangelo/krep.git
