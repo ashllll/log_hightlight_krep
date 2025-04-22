@@ -53,86 +53,81 @@ int tests_failed = 0;
     } while (0)
 
 /* ========================================================================= */
-/* Helper Functions for Creating search_params_t    */
+/* Common helper for both literal and regex params                          */
 /* ========================================================================= */
-
-// Helper to create params for single literal pattern
-search_params_t create_literal_params(const char *pattern, bool case_sensitive, bool count_lines, bool only_match)
+static search_params_t create_base_params(const char *pattern,
+                                          bool case_sensitive,
+                                          bool count_lines,
+                                          bool only_match,
+                                          bool use_regex)
 {
     search_params_t params = {0};
     params.patterns = malloc(sizeof(char *));
     params.pattern_lens = malloc(sizeof(size_t));
     if (!params.patterns || !params.pattern_lens)
     {
-        perror("Failed to allocate memory for single pattern params");
+        perror("Failed to allocate memory for params");
         exit(EXIT_FAILURE);
     }
-    params.patterns[0] = (char *)pattern; // Cast needed as patterns is const char**
+    params.patterns[0] = (char *)pattern;
     params.pattern_lens[0] = strlen(pattern);
     params.num_patterns = 1;
     params.case_sensitive = case_sensitive;
-    params.use_regex = false;
-    params.count_lines_mode = count_lines && !only_match;
-    params.count_matches_mode = count_lines && only_match; // Not directly used, but set for clarity
-    params.track_positions = !(count_lines && !only_match);
-    params.compiled_regex = NULL;
-    params.max_count = SIZE_MAX; // Default: no limit
-
-    // Set legacy fields for compatibility with older test functions if needed
-    params.pattern = params.patterns[0];
-    params.pattern_len = params.pattern_lens[0];
-
-    return params;
-}
-
-// Helper to create params for single regex pattern
-search_params_t create_regex_params(const char *pattern, bool case_sensitive, bool count_lines, bool only_match)
-{
-    search_params_t params = {0};
-    params.patterns = malloc(sizeof(char *));
-    params.pattern_lens = malloc(sizeof(size_t));
-    if (!params.patterns || !params.pattern_lens)
-    {
-        perror("Failed to allocate memory for single regex params");
-        exit(EXIT_FAILURE);
-    }
-    params.patterns[0] = (char *)pattern;     // Cast needed
-    params.pattern_lens[0] = strlen(pattern); // Store length even for regex
-    params.num_patterns = 1;
-    params.case_sensitive = case_sensitive;
-    params.use_regex = true;
+    params.use_regex = use_regex;
     params.count_lines_mode = count_lines && !only_match;
     params.count_matches_mode = count_lines && only_match;
     params.track_positions = !(count_lines && !only_match);
-    params.max_count = SIZE_MAX; // Default: no limit
-
-    // Compile the regex (allocate locally for the test)
-    regex_t *compiled_regex = malloc(sizeof(regex_t));
-    if (!compiled_regex)
-    {
-        perror("Failed to allocate memory for compiled regex");
-        exit(EXIT_FAILURE);
-    }
-    int rflags = REG_EXTENDED | REG_NEWLINE | (case_sensitive ? 0 : REG_ICASE);
-    int ret = regcomp(compiled_regex, pattern, rflags);
-    if (ret != 0)
-    {
-        char ebuf[256];
-        regerror(ret, compiled_regex, ebuf, sizeof(ebuf));
-        fprintf(stderr, "Regex compilation error in test setup: %s\n", ebuf);
-        free(compiled_regex);
-        exit(EXIT_FAILURE);
-    }
-    params.compiled_regex = compiled_regex; // Assign the compiled regex
-
-    // Set legacy fields if needed (less relevant for regex)
+    params.compiled_regex = NULL;
+    params.max_count = SIZE_MAX;
+    // legacy single‐pattern fields
     params.pattern = params.patterns[0];
     params.pattern_len = params.pattern_lens[0];
-
     return params;
 }
 
-// Cleanup function for params (frees regex if allocated)
+search_params_t create_literal_params(const char *pattern,
+                                      bool case_sensitive,
+                                      bool count_lines,
+                                      bool only_match)
+{
+    return create_base_params(pattern,
+                              case_sensitive,
+                              count_lines,
+                              only_match,
+                              false);
+}
+
+search_params_t create_regex_params(const char *pattern,
+                                    bool case_sensitive,
+                                    bool count_lines,
+                                    bool only_match)
+{
+    search_params_t params = create_base_params(pattern,
+                                                case_sensitive,
+                                                count_lines,
+                                                only_match,
+                                                true);
+    regex_t *compiled = malloc(sizeof(regex_t));
+    if (!compiled)
+    {
+        perror("Failed to allocate memory for regex_t");
+        exit(EXIT_FAILURE);
+    }
+    int rflags = REG_EXTENDED | REG_NEWLINE | (case_sensitive ? 0 : REG_ICASE);
+    int ret = regcomp(compiled, pattern, rflags);
+    if (ret != 0)
+    {
+        char ebuf[256];
+        regerror(ret, compiled, ebuf, sizeof(ebuf));
+        fprintf(stderr, "Regex compilation error in test setup: %s\n", ebuf);
+        free(compiled);
+        exit(EXIT_FAILURE);
+    }
+    params.compiled_regex = compiled;
+    return params;
+}
+
+/* Cleanup function for params (frees regex if allocated) */
 void cleanup_params(search_params_t *params)
 {
     if (params->use_regex && params->compiled_regex)
