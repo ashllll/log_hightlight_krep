@@ -8,21 +8,21 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
-#include <ctype.h> // Add this for tolower()
-#include "krep.h"
-#include "aho_corasick.h"
+#include <stdint.h>
+#include <ctype.h> // Include for tolower
 
-// Aho-Corasick node structure
+#include "krep.h"         // Include main header FIRST for search_params_t definition
+#include "aho_corasick.h" // Include the header defining ac_trie_t forward decl
+
 typedef struct ac_node
 {
-    struct ac_node *children[256]; // One child per possible character
-    struct ac_node *failure;       // Failure link (used for jumping when character not found)
-    int *output_indices;           // Indices of patterns ending at this node
-    int num_outputs;               // Number of pattern indices
-    int capacity;                  // Allocated capacity for outputs
+    struct ac_node *children[256]; // Child nodes for each character
+    struct ac_node *fail_link;     // Failure link for state transitions
+    size_t *output_indices;        // Array of pattern indices ending at this node
+    int num_outputs;               // Number of pattern indices ending exactly here
+    int capacity_outputs;          // Capacity of the output_indices array
 } ac_node_t;
 
-// Aho-Corasick trie structure
 struct ac_trie
 {
     ac_node_t *root;     // Root node of the trie
@@ -45,30 +45,36 @@ static ac_node_t *ac_node_create()
     // Initialize output_indices as NULL (allocated later if needed)
     node->output_indices = NULL;
     node->num_outputs = 0;
-    node->capacity = 0;
-    node->failure = NULL;
+    node->capacity_outputs = 0;
+    node->fail_link = NULL;
 
     return node;
 }
 
 // Add pattern index to node outputs
-static bool ac_node_add_output(ac_node_t *node, int pattern_index)
+static bool ac_node_add_output(ac_node_t *node, size_t pattern_index)
 {
     if (!node)
         return false;
 
     // Check if we need to allocate or resize
-    if (node->num_outputs >= node->capacity)
+    if (node->num_outputs >= node->capacity_outputs)
     {
-        int new_capacity = node->capacity == 0 ? 4 : node->capacity * 2;
-        int *new_outputs = realloc(node->output_indices, new_capacity * sizeof(int));
+        int new_capacity = node->capacity_outputs == 0 ? 4 : node->capacity_outputs * 2;
+        // Check for potential integer overflow before multiplication
+        if (new_capacity < node->capacity_outputs)
+        {
+            perror("Integer overflow calculating new capacity for Aho-Corasick node outputs");
+            return false;
+        }
+        size_t *new_outputs = realloc(node->output_indices, new_capacity * sizeof(size_t));
         if (!new_outputs)
         {
             perror("Failed to resize Aho-Corasick node outputs");
             return false;
         }
         node->output_indices = new_outputs;
-        node->capacity = new_capacity;
+        node->capacity_outputs = new_capacity;
     }
 
     // Add the pattern index
@@ -124,6 +130,7 @@ ac_trie_t *ac_trie_build(const search_params_t *params)
         free(trie);
         return NULL;
     }
+    trie->root->fail_link = trie->root; // Root's failure link points to itself
 
     trie->num_patterns = params->num_patterns;
     trie->case_sensitive = params->case_sensitive;
@@ -134,15 +141,24 @@ ac_trie_t *ac_trie_build(const search_params_t *params)
         const unsigned char *pattern = (const unsigned char *)params->patterns[p];
         size_t pattern_len = params->pattern_lens[p];
 
+        // Handle empty pattern: Add index 0 to root's output if an empty pattern exists
         if (pattern_len == 0)
-            continue; // Skip empty patterns
+        {
+            if (!ac_node_add_output(trie->root, p))
+            {
+                ac_trie_free(trie);
+                return NULL;
+            }
+            continue;
+        }
 
         ac_node_t *current = trie->root;
 
         // Insert each character of the pattern
         for (size_t i = 0; i < pattern_len; i++)
         {
-            unsigned char c = params->case_sensitive ? pattern[i] : tolower(pattern[i]);
+            unsigned char c_orig = pattern[i];
+            unsigned char c = params->case_sensitive ? c_orig : lower_table[c_orig];
 
             // Create child node if it doesn't exist
             if (!current->children[c])
@@ -161,29 +177,50 @@ ac_trie_t *ac_trie_build(const search_params_t *params)
         }
 
         // Mark this node with the pattern index (used later for output)
-        ac_node_add_output(current, (int)p);
+        if (!ac_node_add_output(current, p))
+        {
+            ac_trie_free(trie);
+            return NULL;
+        }
     }
 
-    // Build failure links using BFS
-    // Queue for BFS traversal
-    ac_node_t **queue = malloc(trie->num_patterns * 256 * sizeof(ac_node_t *)); // Generous upper bound
+    // --- Build failure links using BFS with dynamic queue ---
+    size_t queue_capacity = 64; // Initial capacity
+    ac_node_t **queue = malloc(queue_capacity * sizeof(ac_node_t *));
     if (!queue)
     {
-        perror("Failed to allocate queue for Aho-Corasick BFS");
-        ac_trie_free(trie); // Free the partially built trie
+        perror("Failed to allocate initial queue for Aho-Corasick BFS");
+        ac_trie_free(trie);
         return NULL;
     }
 
-    int queue_front = 0;
-    int queue_rear = 0;
+    size_t queue_front = 0;
+    size_t queue_rear = 0;
 
-    // Set up the failure links for the first level (all point to root)
-    for (int c = 0; c < 256; c++)
+    // Add root's immediate children to the queue and set their failure links to root
+    for (int c_val = 0; c_val < 256; c_val++) // Use c_val to avoid shadowing
     {
+        unsigned char c = (unsigned char)c_val; // Cast for indexing
         if (trie->root->children[c])
         {
-            trie->root->children[c]->failure = trie->root;
-            queue[queue_rear++] = trie->root->children[c]; // Add to queue
+            ac_node_t *child = trie->root->children[c];
+            child->fail_link = trie->root; // Direct children fail to root
+
+            // Enqueue
+            if (queue_rear >= queue_capacity)
+            {
+                queue_capacity *= 2;
+                ac_node_t **new_queue = realloc(queue, queue_capacity * sizeof(ac_node_t *));
+                if (!new_queue)
+                {
+                    perror("Failed to resize queue for Aho-Corasick BFS");
+                    free(queue);
+                    ac_trie_free(trie);
+                    return NULL;
+                }
+                queue = new_queue;
+            }
+            queue[queue_rear++] = child;
         }
     }
 
@@ -193,37 +230,38 @@ ac_trie_t *ac_trie_build(const search_params_t *params)
         ac_node_t *current = queue[queue_front++]; // Dequeue
 
         // Process each child of current node
-        for (int c = 0; c < 256; c++)
+        for (int c_val = 0; c_val < 256; c_val++) // Use c_val to avoid shadowing
         {
+            unsigned char c = (unsigned char)c_val; // Cast to unsigned char for indexing
             if (current->children[c])
             {
                 ac_node_t *child = current->children[c];
-                queue[queue_rear++] = child; // Add to queue
+
+                // Enqueue child
+                if (queue_rear >= queue_capacity)
+                {
+                    queue_capacity *= 2;
+                    ac_node_t **new_queue = realloc(queue, queue_capacity * sizeof(ac_node_t *));
+                    if (!new_queue)
+                    {
+                        perror("Failed to resize queue during Aho-Corasick BFS");
+                        free(queue);
+                        ac_trie_free(trie);
+                        return NULL;
+                    }
+                    queue = new_queue;
+                }
+                queue[queue_rear++] = child;
 
                 // Find failure link for this child
-                ac_node_t *failure = current->failure;
-
-                // Keep following failure links until we find a node that has a child with the same character
+                ac_node_t *failure = current->fail_link;
                 while (failure != trie->root && !failure->children[c])
                 {
-                    failure = failure->failure;
+                    failure = failure->fail_link;
                 }
 
-                // Set the failure link for the child
-                if (failure->children[c])
-                {
-                    child->failure = failure->children[c];
-
-                    // Copy outputs from failure node to this node
-                    for (int j = 0; j < child->failure->num_outputs; j++)
-                    {
-                        ac_node_add_output(child, child->failure->output_indices[j]);
-                    }
-                }
-                else
-                {
-                    child->failure = trie->root;
-                }
+                // Set the failure link
+                child->fail_link = failure->children[c] ? failure->children[c] : trie->root;
             }
         }
     }
@@ -245,118 +283,184 @@ void ac_trie_free(ac_trie_t *trie)
     free(trie);
 }
 
-// Aho-Corasick search function
+// Check if the root node has outputs (used for empty pattern matching in empty files)
+bool ac_trie_root_has_outputs(const ac_trie_t *trie)
+{
+    return (trie != NULL && trie->root != NULL && trie->root->num_outputs > 0);
+}
+
+// Forward declarations for helper functions (assuming they exist in krep.c or elsewhere)
+extern size_t find_line_start(const char *text, size_t max_len, size_t pos);
+extern bool is_whole_word_match(const char *text, size_t text_len, size_t start, size_t end);
+// Match the declaration in krep.h (remove const)
+extern unsigned char lower_table[256];
+
+// Corrected Aho-Corasick search function
 uint64_t aho_corasick_search(const search_params_t *params,
                              const char *text_start,
                              size_t text_len,
                              match_result_t *result)
 {
-    // Basic validation
-    if (!params || params->num_patterns == 0 || text_len == 0)
+    // --- 1. Validations ---
+    // Check for NULL pointers for essential structures
+    if (!params || !params->ac_trie || !text_start)
+        return 0;
+    // Add check for root node existence
+    if (!params->ac_trie->root)
     {
+        // Trie structure exists but root is NULL, indicates build failure
+        fprintf(stderr, "Warning: Aho-Corasick trie root is NULL during search.\n");
         return 0;
     }
-    if (params->max_count == 0 && (params->count_lines_mode || params->track_positions))
-    {
+    // If max_count is 0, no matches should be found.
+    if (params->max_count == 0)
         return 0;
-    }
 
-    // Build the trie
-    ac_trie_t *trie = ac_trie_build(params);
-    if (!trie)
-    {
-        return 0; // Failed to build trie
-    }
+    ac_trie_t *trie = params->ac_trie;
+    ac_node_t *current_node = trie->root;
+    uint64_t matches_found = 0;
+    const size_t max_count = params->max_count; // Use const for clarity
+    const bool count_lines_mode = params->count_lines_mode;
+    const bool track_positions = params->track_positions;
+    size_t last_counted_line_start = SIZE_MAX; // Used only if count_lines_mode is true
 
-    uint64_t current_count = 0;
-    bool count_lines_mode = params->count_lines_mode;
-    bool track_positions = params->track_positions;
-    size_t max_count = params->max_count;
-    size_t last_counted_line_start = SIZE_MAX;
-
-    // Search using the Aho-Corasick algorithm
-    ac_node_t *current = trie->root;
-    const unsigned char *text = (const unsigned char *)text_start;
-
+    // --- 2. Iterate through the text ---
     for (size_t i = 0; i < text_len; i++)
     {
-        unsigned char c = trie->case_sensitive ? text[i] : tolower(text[i]);
+        // --- 3. Get character and handle case-insensitivity ---
+        unsigned char c_orig = (unsigned char)text_start[i];
+        // Use lower_table for case-insensitive matching during search
+        unsigned char c = params->case_sensitive ? c_orig : lower_table[c_orig];
 
-        // Follow the trie nodes until we find a match for the current character
-        while (current != trie->root && !current->children[c])
+        // --- 4. Follow failure links ---
+        // Traverse failure links until a node with a transition for 'c' is found,
+        // or until the root node is reached.
+        while (current_node != trie->root && !current_node->children[c])
         {
-            current = current->failure;
+            current_node = current_node->fail_link;
         }
 
-        // Move to the next state
-        if (current->children[c])
+        // --- 5. Make state transition ---
+        // If a transition for 'c' exists from the current node (or a node reached via failure links),
+        // move to that child node. Otherwise, stay at the root.
+        if (current_node->children[c])
         {
-            current = current->children[c];
+            current_node = current_node->children[c];
         }
+        // If no transition exists even from the root, current_node remains root for the next character.
 
-        // Check if the current node contains any pattern outputs
-        if (current->num_outputs > 0)
+        // --- 6. Collect matches by following failure links from the current state ---
+        ac_node_t *output_node = current_node;
+        // Check the current node and all nodes reachable via failure links for outputs.
+        // This ensures we find all patterns ending at the current position 'i'.
+        while (output_node != trie->root)
         {
-            // Process each pattern that ends at this position
-            for (int j = 0; j < current->num_outputs; j++)
+            if (output_node->num_outputs > 0)
             {
-                int pattern_idx = current->output_indices[j];
-                size_t pattern_len = params->pattern_lens[pattern_idx];
-
-                // Calculate the start position of the match
-                size_t match_start = i - pattern_len + 1;
-                size_t match_end = i + 1;
-
-                // Whole word check
-                if (params->whole_word && !is_whole_word_match((const char *)text_start, text_len, match_start, match_end))
-                    continue;
-
-                bool count_incremented_this_match = false;
-
-                if (count_lines_mode)
+                // --- 7. Process patterns ending at this output_node ---
+                for (int j = 0; j < output_node->num_outputs; j++)
                 {
-                    // Find the start of the line containing the match
-                    size_t line_start = find_line_start(text_start, text_len, match_start);
-
-                    // Only count each line once
-                    if (line_start != last_counted_line_start)
+                    // Check max_count *before* processing this specific match.
+                    // If we've already reached the limit, return immediately.
+                    if (matches_found >= max_count)
                     {
-                        current_count++;
-                        last_counted_line_start = line_start;
-                        count_incremented_this_match = true;
+                        return matches_found;
                     }
-                }
-                else
-                {
-                    // Count all matches
-                    current_count++;
-                    count_incremented_this_match = true;
 
-                    // Add position to result if tracking
-                    if (track_positions && result)
+                    size_t pattern_idx = output_node->output_indices[j];
+                    size_t pattern_len = params->pattern_lens[pattern_idx];
+
+                    // Skip empty patterns (should not happen if build logic is correct, but safe check)
+                    if (pattern_len == 0)
+                        continue;
+
+                    // --- 8. Calculate match position ---
+                    // Match ends *at* index i (inclusive).
+                    // Start index is i - pattern_len + 1.
+                    size_t match_start = i + 1 - pattern_len;
+                    size_t match_end = i + 1; // Exclusive end position
+
+                    // --- 9. Apply whole word check ---
+                    if (params->whole_word && !is_whole_word_match(text_start, text_len, match_start, match_end))
                     {
-                        if (!match_result_add(result, match_start, match_end))
+                        continue; // Skip if not a whole word match
+                    }
+
+                    // --- 10. Process match based on mode ---
+                    if (count_lines_mode)
+                    {
+                        size_t line_start = find_line_start(text_start, text_len, match_start);
+                        // Only count if this line hasn't been counted yet for this search
+                        if (line_start != last_counted_line_start)
                         {
-                            fprintf(stderr, "Warning: Failed to add match position in Aho-Corasick.\n");
+                            // We already checked max_count at the start of the inner loop
+                            matches_found++;
+                            last_counted_line_start = line_start;
+                            // Check again immediately after incrementing in case this was the last one needed
+                            if (matches_found >= max_count)
+                                return matches_found;
                         }
                     }
-                }
-
-                // Check if we've reached the max count
-                if (count_incremented_this_match && current_count >= max_count && max_count != SIZE_MAX)
-                {
-                    // Reached max_count, truncate the result if needed
-                    if (track_positions && result && result->count > max_count)
+                    else // Count matches or track positions
                     {
-                        result->count = max_count;
+                        // We already checked max_count at the start of the inner loop
+                        matches_found++;
+
+                        // Add position if tracking is enabled and result struct is provided
+                        if (track_positions && result)
+                        {
+                            match_result_add(result, match_start, match_end);
+                        }
+                        // Check again immediately after incrementing
+                        if (matches_found >= max_count)
+                            return matches_found;
                     }
-                    ac_trie_free(trie);
-                    return current_count;
+                } // End loop through outputs at this node
+            }
+
+            // --- 11. Follow failure link ---
+            // Move to the failure link node to find shorter patterns ending at the same position 'i'.
+            output_node = output_node->fail_link;
+
+            // Optimization: Check max_count again before continuing the inner while loop.
+            // If the limit was reached while processing outputs of the current output_node,
+            // we can stop checking further failure links for this text position 'i'.
+            if (matches_found >= max_count)
+                return matches_found;
+
+        } // End while(output_node != trie->root)
+
+        // Check max_count one last time after processing all outputs for position `i`
+        if (matches_found >= max_count)
+            return matches_found;
+
+    } // End loop through text (for size_t i = 0; ...)
+
+    // --- Handle potential empty pattern match in empty text ---
+    // This case is only relevant if the input text itself was empty.
+    // An empty pattern ("") should match an empty text exactly once if present.
+    if (text_len == 0 && trie->root->num_outputs > 0)
+    {
+        for (int j = 0; j < trie->root->num_outputs; ++j)
+        {
+            size_t pattern_idx = trie->root->output_indices[j];
+            // Check if this output corresponds to the empty pattern
+            if (params->pattern_lens[pattern_idx] == 0)
+            {
+                // Found the empty pattern match at the root
+                if (matches_found < max_count) // Should always be true if text_len is 0 unless max_count was 0
+                {
+                    matches_found++;
+                    if (track_positions && result)
+                    {
+                        match_result_add(result, 0, 0); // Empty match at position 0
+                    }
                 }
+                // Only count one match for the empty pattern in empty text
+                break;
             }
         }
     }
 
-    ac_trie_free(trie);
-    return current_count;
+    return matches_found;
 }

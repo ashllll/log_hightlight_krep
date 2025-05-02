@@ -10,9 +10,10 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdlib.h>
-#include <limits.h>  // For SIZE_MAX
-#include <regex.h>   // For regex_t
-#include "../krep.h" // Include main header for the full function declarations
+#include <limits.h>          // For SIZE_MAX
+#include <regex.h>           // For regex_t
+#include "../krep.h"         // Include main header for the full function declarations
+#include "../aho_corasick.h" // Add this include
 
 #ifdef TESTING
 /*

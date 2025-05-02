@@ -15,6 +15,13 @@
 #include <stdatomic.h> // For atomic types used in structs
 #include <ctype.h>     // For isalnum function
 
+// --- Global Variables (declared extern) ---
+extern unsigned char lower_table[256];
+
+// Forward declaration for Aho-Corasick trie structure
+struct ac_trie;
+typedef struct ac_trie ac_trie_t;
+
 /* --- Compiler-specific macros --- */
 #ifdef __GNUC__
 #define KREP_UNUSED __attribute__((unused))
@@ -31,23 +38,24 @@
 #define KREP_COLOR_TEXT "\033[0m"         // Default terminal text color
 
 /* --- Match tracking structure --- */
+// Define match_position_t BEFORE match_result_t
 typedef struct
 {
    size_t start_offset; // Starting position of the match
    size_t end_offset;   // Ending position of the match (exclusive)
 } match_position_t;
 
-typedef struct
+typedef struct match_result_t // Add the struct tag here
 {
    match_position_t *positions; // Dynamically resizing array of match positions
    uint64_t count;              // Number of matches found and stored
    uint64_t capacity;           // Current allocated capacity of the positions array
-} match_result_t;
+} match_result_t;               // Typedef remains the same
 
 /* --- Structures for Multithreading --- */
 
 // Parameters shared across search functions and threads
-typedef struct
+typedef struct search_params
 {
    // Single pattern legacy fields (still used by some functions)
    const char *pattern;
@@ -69,6 +77,9 @@ typedef struct
 
    // Compiled regex (if applicable, compiled once per file/string)
    const regex_t *compiled_regex;
+
+   // Compiled Aho-Corasick trie (if applicable)
+   ac_trie_t *ac_trie; // Add pointer for pre-built trie
 
    // Max count limit from options
    size_t max_count;
@@ -185,7 +196,6 @@ void print_usage(const char *program_name);
 uint64_t boyer_moore_search(const search_params_t *params, const char *text_start, size_t text_len, match_result_t *result);
 uint64_t kmp_search(const search_params_t *params, const char *text_start, size_t text_len, match_result_t *result);
 uint64_t regex_search(const search_params_t *params, const char *text_start, size_t text_len, match_result_t *result);
-uint64_t aho_corasick_search(const search_params_t *params, const char *text_start, size_t text_len, match_result_t *result);
 uint64_t memchr_search(const search_params_t *params, const char *text_start, size_t text_len, match_result_t *result);
 uint64_t memchr_short_search(const search_params_t *params, const char *text_start, size_t text_len, match_result_t *result); // New function for short patterns
 

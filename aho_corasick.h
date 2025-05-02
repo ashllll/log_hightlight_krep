@@ -6,40 +6,36 @@
 #ifndef AHO_CORASICK_H
 #define AHO_CORASICK_H
 
-#include "krep.h" // Include main header for search_params_t and other types
+#include <stdbool.h>
+#include <stddef.h> // For size_t
+#include <stdint.h> // For uint64_t
 
-/**
- * Aho-Corasick trie structure (opaque type)
- */
+// Forward declaration for search_params_t instead of including krep.h
+struct search_params;
+typedef struct search_params search_params_t;
+
+// Forward declaration for match_result_t (needed by aho_corasick_search)
+// Use the same struct tag as defined in krep.h
+struct match_result_t;
+typedef struct match_result_t match_result_t;
+
+// Forward declaration for internal node structure
+struct ac_node;
+
+// Forward declaration for Aho-Corasick trie structure
+struct ac_trie;
 typedef struct ac_trie ac_trie_t;
 
-/**
- * Build an Aho-Corasick trie from the patterns in search_params
- *
- * @param params Search parameters containing patterns
- * @return A new Aho-Corasick trie, or NULL on failure
- */
+// Build the Aho-Corasick Trie from search parameters
 ac_trie_t *ac_trie_build(const search_params_t *params);
 
-/**
- * Free an Aho-Corasick trie
- *
- * @param trie The trie to free
- */
+// Free the Aho-Corasick Trie
 void ac_trie_free(ac_trie_t *trie);
 
-/**
- * Search for all patterns in the text using the Aho-Corasick algorithm
- *
- * @param params Search parameters including patterns and options
- * @param text_start Pointer to the start of the text
- * @param text_len Length of the text
- * @param result Match result structure to store positions (if track_positions is true)
- * @return The number of matches found (or lines matching if count_lines_mode is true)
- */
-uint64_t aho_corasick_search(const search_params_t *params,
-                             const char *text_start,
-                             size_t text_len,
-                             match_result_t *result);
+// Check if the root node of the trie has any outputs (for empty pattern matching)
+bool ac_trie_root_has_outputs(const ac_trie_t *trie);
 
-#endif /* AHO_CORASICK_H */
+// Aho-Corasick search function declaration
+uint64_t aho_corasick_search(const search_params_t *params, const char *text_start, size_t text_len, match_result_t *result);
+
+#endif // AHO_CORASICK_H

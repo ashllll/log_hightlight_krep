@@ -10,7 +10,8 @@
 #define _GNU_SOURCE
 #endif
 
-#include "krep.h" // Include the header file
+#include "krep.h"         // Include the header file
+#include "aho_corasick.h" // Include AC header for build/free functions
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -35,6 +36,9 @@
 
 // Add forward declaration for is_repetitive_pattern here
 static bool is_repetitive_pattern(const char *pattern, size_t pattern_len);
+
+// Forward declaration for ensure_line_buffer_capacity
+static bool ensure_line_buffer_capacity(char **buffer_ptr, size_t *capacity_ptr, size_t current_pos, size_t needed);
 
 // SIMD Intrinsics Includes based on compiler flags (from Makefile)
 #if defined(__AVX2__)
@@ -64,7 +68,7 @@ static bool is_repetitive_pattern(const char *pattern, size_t pattern_len);
 #define MIN_CHUNK_SIZE (4 * 1024 * 1024)
 #define SINGLE_THREAD_FILE_SIZE_THRESHOLD MIN_CHUNK_SIZE
 #define ADAPTIVE_THREAD_FILE_SIZE_THRESHOLD 0
-#define VERSION "1.1.2"
+#define VERSION "1.2"
 #ifndef PATH_MAX
 #define PATH_MAX 4096
 #endif
@@ -91,7 +95,7 @@ static bool force_no_simd = false;
 static atomic_bool global_match_found_flag = false; // Used in recursive search
 
 // Global lookup table for fast lowercasing
-static unsigned char lower_table[256];
+unsigned char lower_table[256]; // Remove static
 
 // Initialize the lower_table at program start
 static void __attribute__((constructor)) init_lower_table(void)
@@ -371,51 +375,29 @@ static int compare_match_positions(const void *a, const void *b)
     return 0;
 }
 
-static bool ensure_line_buffer_capacity(char **buffer_ptr, size_t *capacity_ptr, size_t current_pos, size_t needed)
+// Helper function to safely append data to a batch buffer
+// Modifies the current write pointer and batch position pointer
+static inline void safe_append_to_batch(char **current_write_ptr_ptr, char *batch_buffer_end, size_t *batch_pos_ptr, size_t batch_buffer_size, const char *data, size_t data_len)
 {
-    // Check if reallocation is necessary
-    if (current_pos + needed > *capacity_ptr)
+    char *current_write_ptr = *current_write_ptr_ptr;
+    size_t available_space = batch_buffer_end - current_write_ptr;
+
+    if (data_len <= available_space)
     {
-        size_t new_capacity = *capacity_ptr;
-
-        // Start with a reasonable minimum capacity if it's currently 0
-        if (new_capacity == 0)
-        {
-            new_capacity = (current_pos + needed > 256) ? current_pos + needed : 256;
-        }
-
-        // Double the capacity until it's sufficient
-        while (new_capacity < current_pos + needed)
-        {
-            // Check for potential integer overflow before doubling
-            if (new_capacity > SIZE_MAX / 2)
-            {
-                new_capacity = current_pos + needed; // Try exact required size
-                // Check if exact size calculation itself overflowed
-                if (new_capacity < current_pos + needed)
-                {
-                    fprintf(stderr, "Error: Cannot calculate required capacity for line buffer (overflow).\n");
-                    return false;
-                }
-                break; // Use the calculated exact capacity
-            }
-            new_capacity *= 2;
-        }
-
-        // Perform reallocation
-        char *new_buffer = realloc(*buffer_ptr, new_capacity);
-        if (!new_buffer)
-        {
-            perror("Failed to resize line buffer via realloc");
-            // Keep the old buffer intact, signal failure
-            return false;
-        }
-
-        // Update the caller's buffer pointer and capacity
-        *buffer_ptr = new_buffer;
-        *capacity_ptr = new_capacity;
+        memcpy(current_write_ptr, data, data_len);
+        *current_write_ptr_ptr += data_len; // Update the caller's pointer
     }
-    return true; // Capacity is sufficient
+    else
+    {
+        // Handle buffer overflow scenario (truncate)
+        if (available_space > 0)
+        {
+            memcpy(current_write_ptr, data, available_space);
+            *current_write_ptr_ptr += available_space; // Update the caller's pointer
+        }
+        // Mark buffer as full by setting the position to the size
+        *batch_pos_ptr = batch_buffer_size;
+    }
 }
 
 size_t print_matching_items(const char *filename, const char *text, size_t text_len, const match_result_t *result, const search_params_t *params)
@@ -639,60 +621,88 @@ size_t print_matching_items(const char *filename, const char *text, size_t text_
             }
 
             // Calculate the total size required in the batch buffer for this entry
-            size_t required = filename_prefix_len + lineno_len + len + 1; // +1 for newline
+            // Note: This is an estimate; actual size might differ slightly if newlines are replaced.
+            size_t required_estimate = filename_prefix_len + lineno_len + len + 1; // +1 for newline
             if (color_output_enabled)
             {
-                required += len_color_match + len_color_reset;
+                required_estimate += len_color_match + len_color_reset;
             }
 
-            // Flush the batch buffer to stdout if the new entry won't fit
-            if (o_batch_pos + required > O_BATCH_BUFFER_SIZE)
+            // Flush the batch buffer to stdout if the new entry won't fit (use estimate)
+            if (o_batch_pos + required_estimate > O_BATCH_BUFFER_SIZE)
             {
                 if (fwrite(o_batch_buffer, 1, o_batch_pos, stdout) != o_batch_pos)
                 {
-                    perror("Error writing batch buffer to stdout");
+                    perror("Error writing batch buffer to stdout (-o mode)");
+                    // Consider how to handle write errors; maybe break or return error count?
+                    break;
                 }
                 o_batch_pos = 0; // Reset batch buffer position
             }
 
             // --- Efficient append to batch buffer using direct pointer manipulation ---
             char *current_write_ptr = o_batch_buffer + o_batch_pos;
+            char *batch_buffer_end = o_batch_buffer + O_BATCH_BUFFER_SIZE; // Boundary check
 
             // 1. Copy filename prefix (if any)
             if (filename_prefix_len > 0)
             {
-                memcpy(current_write_ptr, filename_prefix, filename_prefix_len);
-                current_write_ptr += filename_prefix_len;
+                safe_append_to_batch(&current_write_ptr, batch_buffer_end, &o_batch_pos, O_BATCH_BUFFER_SIZE, filename_prefix, filename_prefix_len);
             }
 
             // 2. Copy line number
-            memcpy(current_write_ptr, lineno_buffer, lineno_len);
-            current_write_ptr += lineno_len;
+            safe_append_to_batch(&current_write_ptr, batch_buffer_end, &o_batch_pos, O_BATCH_BUFFER_SIZE, lineno_buffer, lineno_len);
 
             // 3. Start color for match (if enabled)
             if (color_output_enabled)
             {
-                memcpy(current_write_ptr, color_match, len_color_match);
-                current_write_ptr += len_color_match;
+                safe_append_to_batch(&current_write_ptr, batch_buffer_end, &o_batch_pos, O_BATCH_BUFFER_SIZE, color_match, len_color_match);
             }
 
-            // 4. Copy the matched text
-            memcpy(current_write_ptr, text + start, len);
-            current_write_ptr += len;
+            // 4. Copy the matched text, replacing internal newlines
+            const char *match_ptr = text + start;
+            for (size_t k = 0; k < len; ++k)
+            {
+                char current_char = match_ptr[k];
+                if (current_char == '\n')
+                {
+                    safe_append_to_batch(&current_write_ptr, batch_buffer_end, &o_batch_pos, O_BATCH_BUFFER_SIZE, " ", 1);
+                }
+                else
+                {
+                    safe_append_to_batch(&current_write_ptr, batch_buffer_end, &o_batch_pos, O_BATCH_BUFFER_SIZE, &current_char, 1);
+                }
+                // Check if buffer became full during character copy
+                if (o_batch_pos == O_BATCH_BUFFER_SIZE)
+                {
+                    break; // Stop copying this match if buffer full
+                }
+            }
+
+            // Check again if buffer became full during the loop
+            if (o_batch_pos == O_BATCH_BUFFER_SIZE)
+            {
+                // Flush here if needed, or let the outer loop handle it
+                continue; // Skip rest of processing for this match
+            }
 
             // 5. End color for match (if enabled)
             if (color_output_enabled)
             {
-                memcpy(current_write_ptr, color_reset, len_color_reset);
-                current_write_ptr += len_color_reset;
+                safe_append_to_batch(&current_write_ptr, batch_buffer_end, &o_batch_pos, O_BATCH_BUFFER_SIZE, color_reset, len_color_reset);
             }
 
-            // 6. Add newline
-            *current_write_ptr = '\n';
-            current_write_ptr++;
+            // 6. Add newline (only if buffer not already full)
+            if (o_batch_pos < O_BATCH_BUFFER_SIZE)
+            {
+                safe_append_to_batch(&current_write_ptr, batch_buffer_end, &o_batch_pos, O_BATCH_BUFFER_SIZE, "\n", 1);
+            }
 
-            // Update batch buffer position
-            o_batch_pos = current_write_ptr - o_batch_buffer;
+            // Update batch buffer position based on the actual data written
+            if (o_batch_pos != O_BATCH_BUFFER_SIZE)
+            {
+                o_batch_pos = current_write_ptr - o_batch_buffer;
+            }
             items_printed_count++;
         }
 
@@ -772,14 +782,14 @@ size_t print_matching_items(const char *filename, const char *text, size_t text_
             }
 
             // Find the start of the line containing this match (optimization: use memrchr if available)
-            size_t line_start = find_line_start(text, text_len, first_match_start_on_line);
+            size_t line_start = find_line_start(text, text_len, first_match_start_on_line); // Use text instead of text_start
 
             // Check if this line has already been printed in a previous iteration
             if (line_start == last_printed_line_start)
             {
                 // Efficiently skip all subsequent matches that start on this *same* line
                 // Find the end of the current line first
-                size_t current_line_end = find_line_end(text, text_len, line_start);
+                size_t current_line_end = find_line_end(text, text_len, line_start); // Use text instead of text_start
                 while (i < result->count && result->positions[i].start_offset < current_line_end)
                 {
                     i++;
@@ -788,7 +798,7 @@ size_t print_matching_items(const char *filename, const char *text, size_t text_
             }
 
             // Found a new line to process. Find its end boundary.
-            size_t line_end = find_line_end(text, text_len, line_start);
+            size_t line_end = find_line_end(text, text_len, line_start); // Use text instead of text_start
 
             // --- Collect all matches that fall within this line ---
             size_t line_match_count = 0;
@@ -975,8 +985,6 @@ size_t print_matching_items(const char *filename, const char *text, size_t text_
             // Advance the main loop index 'i' past all matches processed for this line
             i = line_match_scan_idx;
             continue; // Continue to the next potential line
-
-            // Removed line_format_error label and goto as buffer allocation is done upfront
         }
 
         // Flush any remaining content in the line batch buffer
@@ -997,6 +1005,48 @@ size_t print_matching_items(const char *filename, const char *text, size_t text_
 }
 
 // --- Utility Functions ---
+
+// Helper function to ensure a buffer has enough capacity, reallocating if needed.
+// Returns true on success, false on allocation failure.
+static bool ensure_line_buffer_capacity(char **buffer_ptr, size_t *capacity_ptr, size_t current_pos, size_t needed)
+{
+    if (current_pos + needed > *capacity_ptr)
+    {
+        size_t new_capacity = *capacity_ptr;
+        if (new_capacity == 0)
+        {
+            new_capacity = 1024; // Start with a reasonable size
+        }
+        // Double the capacity until it's large enough
+        while (new_capacity < current_pos + needed)
+        {
+            // Check for potential overflow before doubling
+            if (new_capacity > SIZE_MAX / 2)
+            {
+                // If doubling would overflow, try setting to the exact needed size + some buffer
+                // This is a last resort and might still fail if needed is too large
+                new_capacity = current_pos + needed + 1024;
+                if (new_capacity < current_pos + needed)
+                { // Check overflow again
+                    fprintf(stderr, "Error: Cannot allocate required buffer capacity (overflow).\n");
+                    return false;
+                }
+                break; // Exit loop after setting to required size
+            }
+            new_capacity *= 2;
+        }
+
+        char *new_buffer = realloc(*buffer_ptr, new_capacity);
+        if (!new_buffer)
+        {
+            perror("realloc failed for buffer");
+            return false;
+        }
+        *buffer_ptr = new_buffer;
+        *capacity_ptr = new_capacity;
+    }
+    return true;
+}
 
 // Get monotonic time
 double get_time(void)
@@ -1228,14 +1278,14 @@ uint64_t regex_search(const search_params_t *params,
                       match_result_t *result)
 {
     // 1) If limit is zero, no matches.
-    if (params->max_count == 0)
+    if (params->max_count == 0 && (params->count_lines_mode || params->track_positions)) // Check both modes
         return 0;
 
-    // 2) Must have a compiled regex.
+    // Must have a compiled regex.
     if (!params->compiled_regex)
         return 0;
 
-    // 3) Special‐case empty haystack: allow zero‐length match like ^$
+    // Special‐case empty haystack: allow zero‐length match like ^$
     if (text_len == 0)
     {
         regmatch_t m;
@@ -1258,18 +1308,75 @@ uint64_t regex_search(const search_params_t *params,
     size_t rem = text_len;
     size_t last_line = SIZE_MAX;
     uint64_t count = 0;
+    size_t max_count = params->max_count; // Get max_count
 
-    while (rem > 0)
+    while (rem > 0 || (rem == 0 && cur == text_start)) // Allow one check for empty string match
     {
-        pmatch[0].rm_so = 0;
-        pmatch[0].rm_eo = rem;
-        int eflags = base_eflags | ((cur == text_start) ? 0 : REG_NOTBOL);
-        if (regexec(regex, cur, 1, pmatch, eflags) != 0)
+        // Ensure we don't search past the end if rem becomes 0 mid-loop
+        if (rem == 0 && cur != text_start)
             break;
 
-        size_t so = pmatch[0].rm_so, eo = pmatch[0].rm_eo;
-        size_t start = (cur - text_start) + so;
-        size_t end = (cur - text_start) + eo;
+        pmatch[0].rm_so = 0;
+        pmatch[0].rm_eo = rem; // Search up to the remaining length
+        // REG_NOTBOL is set if we are not at the absolute start of the original text
+        int eflags = base_eflags | ((cur == text_start) ? 0 : REG_NOTBOL);
+
+        int rc = regexec(regex, cur, 1, pmatch, eflags);
+
+        if (rc != 0)
+        {
+            if (rc == REG_NOMATCH)
+            {
+                break; // No more matches found
+            }
+            else
+            {
+                // Handle regex execution error
+                char ebuf[256];
+                regerror(rc, regex, ebuf, sizeof(ebuf));
+                fprintf(stderr, "krep: Regex execution error: %s\n", ebuf);
+                // Consider returning an error indicator or specific count
+                return count; // Return count found so far on error
+            }
+        }
+
+        // Check for -1 offsets which indicate failure (shouldn't happen if rc == 0)
+        if (pmatch[0].rm_so == -1 || pmatch[0].rm_eo == -1)
+        {
+            fprintf(stderr, "krep: Warning: regexec returned success but invalid offsets.\n");
+            break; // Treat as no match / error
+        }
+
+        size_t so = pmatch[0].rm_so; // Offset relative to 'cur'
+        size_t eo = pmatch[0].rm_eo; // Offset relative to 'cur'
+
+        // Ensure eo >= so (sanity check)
+        if (eo < so)
+        {
+            fprintf(stderr, "krep: Warning: regexec returned eo < so.\n");
+            // Advance past this point to avoid infinite loop
+            size_t adv = 1;
+            if (cur + adv > text_start + text_len)
+                break; // Don't go past end
+            cur += adv;
+            rem = (text_start + text_len) - cur; // Recalculate remaining
+            continue;
+        }
+
+        size_t start = (cur - text_start) + so; // Absolute start offset
+        size_t end = (cur - text_start) + eo;   // Absolute end offset
+
+        // Whole word check
+        if (params->whole_word && !is_whole_word_match(text_start, text_len, start, end))
+        {
+            // If whole word check fails, we need to advance past the start of this failed match
+            size_t adv = so + 1; // Advance at least one byte past the start
+            if (cur + adv > text_start + text_len)
+                break;
+            cur += adv;
+            rem = (text_start + text_len) - cur;
+            continue;
+        }
 
         if (params->count_lines_mode)
         {
@@ -1284,15 +1391,56 @@ uint64_t regex_search(const search_params_t *params,
         {
             count++;
             if (params->track_positions && result)
+            {
                 match_result_add(result, start, end);
+            }
         }
 
-        if (count >= params->max_count)
+        // Check max_count limit
+        if (max_count != SIZE_MAX && count >= max_count)
             break;
 
-        size_t adv = eo > 0 ? eo : 1;
+        // Advance logic: Start next search *after* the current match.
+        // If the match was zero-length, advance by one character to avoid infinite loop.
+        size_t adv = eo; // Advance to the end of the match relative to cur
+        if (so == eo)
+        {             // Zero-length match
+            adv += 1; // Advance by at least one character
+        }
+
+        // Ensure advancement doesn't exceed remaining buffer
+        if (adv == 0)
+        {            // Should only happen if eo=0 and so=0
+            adv = 1; // Force advance by 1 if match is at start and zero-length
+        }
+
+        if (adv > rem)
+        {          // Should not happen if eo <= rem
+            break; // Cannot advance further
+        }
+
+        // Check if advancing goes beyond the original text length
+        if (cur + adv > text_start + text_len)
+        {
+            break;
+        }
+
         cur += adv;
-        rem -= adv;
+        // Recalculate remaining length based on the new 'cur' position
+        rem = (text_start + text_len) - cur;
+
+        // Break if we advanced past the end (safety)
+        if (cur > text_start + text_len)
+        {
+            break;
+        }
+
+        // Handle potential edge case for empty string match at the very end
+        if (cur == text_start + text_len && rem == 0 && so == eo && start == text_len)
+        {
+            // If we found a zero-length match exactly at the end, stop.
+            break;
+        }
     }
 
     return count;
@@ -1701,6 +1849,7 @@ int search_string(const search_params_t *params, const char *text)
     char *combined_regex_pattern = NULL;
     bool regex_compiled = false;
     search_params_t current_params = *params; // Make a mutable copy
+    ac_trie_t *local_ac_trie = NULL;          // Pointer for locally built trie
 
     // --- Validation ---
     if (current_params.num_patterns == 0)
@@ -1754,6 +1903,20 @@ int search_string(const search_params_t *params, const char *text)
             fprintf(stderr, "Error: Cannot allocate memory for match results.\n");
             return 2;
         }
+    }
+
+    // --- Build Aho-Corasick Trie (if needed) ---
+    bool needs_ac_trie = (params->num_patterns > 1 && !params->use_regex);
+    if (needs_ac_trie)
+    {
+        local_ac_trie = ac_trie_build(&current_params);
+        if (!local_ac_trie)
+        {
+            fprintf(stderr, "krep: Error building Aho-Corasick trie.\n");
+            result_code = 2;
+            goto cleanup; // Use goto for consistent cleanup
+        }
+        current_params.ac_trie = local_ac_trie; // Assign to the mutable params copy
     }
 
     // Compile regex if needed
@@ -1915,6 +2078,11 @@ cleanup:
     }
     free(combined_regex_pattern);
     match_result_free(matches);
+    // Free the Aho-Corasick trie if it was built locally
+    if (local_ac_trie)
+    {
+        ac_trie_free(local_ac_trie);
+    }
 
     return result_code;
 }
@@ -1948,6 +2116,7 @@ static void KREP_UNUSED cleanup_global_thread_pool()
 int search_file(const search_params_t *params, const char *filename, int requested_thread_count)
 {
     search_params_t current_params = *params;
+    ac_trie_t *local_ac_trie = NULL; // Pointer for locally built trie
 
     int result_code = 1;                         // Default: no match found
     int fd = -1;                                 // File descriptor
@@ -2042,11 +2211,30 @@ int search_file(const search_params_t *params, const char *filename, int request
         buffer = final_buffer;
         buffer[used_size] = '\0';
 
+        // Need to build AC trie here too if needed for stdin search
+        bool needs_ac_trie_stdin = (current_params.num_patterns > 1 && !current_params.use_regex);
+        if (needs_ac_trie_stdin)
+        {
+            local_ac_trie = ac_trie_build(&current_params);
+            if (!local_ac_trie)
+            {
+                fprintf(stderr, "krep: Error building Aho-Corasick trie for stdin.\n");
+                free(buffer);
+                return 2;
+            }
+            current_params.ac_trie = local_ac_trie;
+        }
+
         // Search the buffer using search_string logic (single-threaded for stdin)
+        // search_string will now use the pre-built trie if current_params.ac_trie is set
         result_code = search_string(&current_params, buffer);
 
-        // Cleanup
+        // Cleanup for stdin
         free(buffer);
+        if (local_ac_trie)
+        { // Free trie built for stdin
+            ac_trie_free(local_ac_trie);
+        }
         return result_code;
     }
 
@@ -2070,8 +2258,21 @@ int search_file(const search_params_t *params, const char *filename, int request
     {
         close(fd);
         bool empty_match = false;
-        // Check if regex matches empty string
-        if (current_params.use_regex)
+        bool needs_ac_trie_empty = (current_params.num_patterns > 1 && !current_params.use_regex);
+
+        // Temporarily build trie just to check root outputs for empty pattern
+        if (needs_ac_trie_empty)
+        {
+            ac_trie_t *temp_trie = ac_trie_build(&current_params);
+            if (ac_trie_root_has_outputs(temp_trie))
+            {
+                empty_match = true;
+            }
+            if (temp_trie)
+                ac_trie_free(temp_trie);
+        }
+        // Check regex empty match
+        else if (current_params.use_regex)
         {
             // Compile regex temporarily to check for empty match
             regex_t temp_regex;
@@ -2118,36 +2319,28 @@ int search_file(const search_params_t *params, const char *filename, int request
             }
             free(temp_combined_pattern);
         }
-        // Aho-Corasick can also match empty string if provided
-        else if (current_params.num_patterns > 0)
+        // Check single literal empty pattern
+        else if (current_params.num_patterns == 1 && current_params.pattern_lens[0] == 0)
         {
-            for (size_t i = 0; i < current_params.num_patterns; ++i)
-            {
-                if (current_params.pattern_lens[i] == 0)
-                {
-                    empty_match = true;
-                    break;
-                }
-            }
+            empty_match = true;
         }
 
         if (empty_match)
         {
             if (current_params.count_lines_mode || current_params.count_matches_mode)
             {
-                printf("%s:1\n", filename); // Count 1 for empty match
+                printf("%s:1\n", filename); // Print count 1
             }
             else if (only_matching)
-            {                                // -o (global flag)
-                printf("%s:1:\n", filename); // Line number 1, empty match
+            {                               // -o (global flag)
+                printf("%s::\n", filename); // Print filename:: for empty match
             }
             else
             {                              // default
-                printf("%s:\n", filename); // Empty line
+                printf("%s:\n", filename); // Print filename: followed by empty line
             }
             atomic_store(&global_match_found_flag, true); // Signal match found for -r
-            // Check max_count for empty match
-            return (max_count != SIZE_MAX && 1 >= max_count) ? 0 : 0; // Return 0 if limit allows at least 1
+            return 0;                                     // Match found
         }
         else
         {
@@ -2164,6 +2357,20 @@ int search_file(const search_params_t *params, const char *filename, int request
         if (current_params.count_lines_mode || current_params.count_matches_mode)
             printf("%s:0\n", filename);
         return 1; // No match possible
+    }
+
+    // --- Build Aho-Corasick Trie (if needed, once for the file) ---
+    bool needs_ac_trie_file = (current_params.num_patterns > 1 && !current_params.use_regex);
+    if (needs_ac_trie_file)
+    {
+        local_ac_trie = ac_trie_build(&current_params);
+        if (!local_ac_trie)
+        {
+            fprintf(stderr, "krep: Error building Aho-Corasick trie for %s.\n", filename);
+            result_code = 2;
+            goto cleanup_file;
+        }
+        current_params.ac_trie = local_ac_trie; // Assign to the mutable params copy
     }
 
     // --- Compile Regex (if needed, once for the file) ---
@@ -2244,6 +2451,13 @@ int search_file(const search_params_t *params, const char *filename, int request
         search_params_t mutable_params = current_params;
         mutable_params.compiled_regex = &compiled_regex_local;
         current_params = mutable_params; // Update current_params to use for threads
+        // Ensure local_ac_trie is NULL if regex is used
+        if (local_ac_trie)
+        {
+            ac_trie_free(local_ac_trie);
+            local_ac_trie = NULL;
+            current_params.ac_trie = NULL;
+        }
     }
 
     // --- Memory Map File ---
@@ -2400,7 +2614,7 @@ int search_file(const search_params_t *params, const char *filename, int request
         }
 
         thread_args[i].thread_id = i;
-        thread_args[i].params = &current_params; // Pass the potentially updated params (with compiled regex)
+        thread_args[i].params = &current_params; // Pass params containing the pre-built trie
         thread_args[i].chunk_start = file_data + current_pos;
 
         size_t this_chunk_len = (current_pos + chunk_size_calc > file_size) ? (file_size - current_pos) : chunk_size_calc;
@@ -2427,15 +2641,22 @@ int search_file(const search_params_t *params, const char *filename, int request
             {
                 if (!thread_pool_submit(global_thread_pool, search_chunk_thread, &thread_args[i]))
                 {
-                    fprintf(stderr, "Failed to submit task to thread pool.\n");
-                    // Fall back to direct execution
-                    search_chunk_thread(&thread_args[i]);
+                    fprintf(stderr, "krep: Failed to submit task for thread %d\n", i);
+                    // Handle error: maybe reduce thread count or abort
+                    thread_args[i].error_flag = true; // Mark thread data as errored
                 }
             }
             else
             {
-                // No thread pool available, run directly
-                search_chunk_thread(&thread_args[i]);
+                int rc = pthread_create(&threads[i], NULL, search_chunk_thread, &thread_args[i]);
+                if (rc)
+                {
+                    fprintf(stderr, "krep: Error creating thread %d: %s\n", i, strerror(rc));
+                    // Handle error: maybe reduce thread count or abort
+                    threads[i] = 0;                   // Mark as not created
+                    thread_args[i].error_flag = true; // Mark thread data as errored
+                    continue;                         // Try launching fewer threads
+                }
             }
             threads_launched++;
         }
@@ -2578,6 +2799,11 @@ cleanup_file:
     free(thread_args);
     if (fd != -1)
         close(fd);
+    // Free the Aho-Corasick trie if it was built for this file
+    if (local_ac_trie)
+    {
+        ac_trie_free(local_ac_trie);
+    }
 
     return result_code;
 }
