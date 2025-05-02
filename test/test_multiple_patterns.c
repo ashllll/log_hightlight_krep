@@ -8,6 +8,8 @@
 #include <stdbool.h>
 #include <time.h>
 #include <inttypes.h> // Add this include for PRIu64 macro
+#include <assert.h>
+#include <stdint.h> // For uint64_t
 
 /* Define TESTING for test builds */
 #ifndef TESTING
@@ -47,6 +49,7 @@ void test_aho_corasick_case_insensitive(void);
 void test_aho_corasick_edge_cases(void);
 void test_position_tracking_multipattern(void);
 void test_multipattern_performance(void);
+void test_multiple_patterns_performance(void);
 
 /**
  * Test basic Aho-Corasick functionality
@@ -72,7 +75,17 @@ void test_basic_aho_corasick(void)
         .count_lines_mode = false,  // Count matches
         .count_matches_mode = true, // Indicate intent
         .compiled_regex = NULL,
-        .max_count = SIZE_MAX};
+        .max_count = SIZE_MAX,
+        .ac_trie = NULL};
+
+    // Build the trie
+    params.ac_trie = ac_trie_build(&params);
+    if (!params.ac_trie)
+    {
+        printf("✗ FAIL: Failed to build Aho-Corasick trie in basic test\n");
+        tests_failed++;
+        return; // Cannot proceed without trie
+    }
 
     // Call aho_corasick_search with the params struct
     uint64_t matches = aho_corasick_search(&params, text, text_len, NULL);
@@ -85,6 +98,9 @@ void test_basic_aho_corasick(void)
     size_t text2_len = strlen(text2);
     matches = aho_corasick_search(&params, text2, text2_len, NULL);
     TEST_ASSERT(matches == 0, "Aho-Corasick finds 0 matches in 'xyz'");
+
+    // Free the trie
+    ac_trie_free(params.ac_trie);
 }
 
 /**
@@ -111,13 +127,26 @@ void test_aho_corasick_case_insensitive(void)
         .count_lines_mode = false,  // Count matches
         .count_matches_mode = true, // Indicate intent
         .compiled_regex = NULL,
-        .max_count = SIZE_MAX};
+        .max_count = SIZE_MAX,
+        .ac_trie = NULL};
+
+    // Build the trie
+    params.ac_trie = ac_trie_build(&params);
+    if (!params.ac_trie)
+    {
+        printf("✗ FAIL: Failed to build Aho-Corasick trie in case-insensitive test (1)\n");
+        tests_failed++;
+        return; // Cannot proceed
+    }
 
     // Call aho_corasick_search with the params struct
     uint64_t matches = aho_corasick_search(&params, text, text_len, NULL);
 
     // Expected matches: "he" (at index 1), "she" (at index 0), "hers" (at index 2)
     TEST_ASSERT(matches == 3, "Aho-Corasick finds 3 matches case-insensitively in 'UsHeRs'");
+
+    // Free the trie
+    ac_trie_free(params.ac_trie);
 
     // Test with different casing in patterns
     const char *patterns2[] = {"HE", "SHE", "HIS", "HERS"};
@@ -131,10 +160,23 @@ void test_aho_corasick_case_insensitive(void)
         .count_lines_mode = false,
         .count_matches_mode = true,
         .compiled_regex = NULL,
-        .max_count = SIZE_MAX};
+        .max_count = SIZE_MAX,
+        .ac_trie = NULL};
+
+    // Build the trie
+    params2.ac_trie = ac_trie_build(&params2);
+    if (!params2.ac_trie)
+    {
+        printf("✗ FAIL: Failed to build Aho-Corasick trie in case-insensitive test (2)\n");
+        tests_failed++;
+        return; // Cannot proceed
+    }
 
     matches = aho_corasick_search(&params2, text, text_len, NULL);
     TEST_ASSERT(matches == 3, "Aho-Corasick finds 3 matches case-insensitively with uppercase patterns");
+
+    // Free the trie
+    ac_trie_free(params2.ac_trie);
 }
 
 /**
@@ -161,7 +203,17 @@ void test_aho_corasick_edge_cases(void)
         .count_lines_mode = false,  // Count matches
         .count_matches_mode = true, // Indicate intent
         .compiled_regex = NULL,
-        .max_count = SIZE_MAX};
+        .max_count = SIZE_MAX,
+        .ac_trie = NULL};
+
+    // Build the trie
+    params.ac_trie = ac_trie_build(&params);
+    if (!params.ac_trie)
+    {
+        printf("✗ FAIL: Failed to build Aho-Corasick trie in edge case test (overlapping)\n");
+        tests_failed++;
+        return; // Cannot proceed
+    }
 
     // Call aho_corasick_search with the params struct
     uint64_t matches = aho_corasick_search(&params, text, text_len, NULL);
@@ -171,6 +223,9 @@ void test_aho_corasick_edge_cases(void)
     // Test empty text
     matches = aho_corasick_search(&params, "", 0, NULL);
     TEST_ASSERT(matches == 0, "Aho-Corasick finds 0 matches in empty text");
+
+    // Free the trie
+    ac_trie_free(params.ac_trie);
 
     // Test empty patterns list
     search_params_t params_empty = {
@@ -183,9 +238,17 @@ void test_aho_corasick_edge_cases(void)
         .count_lines_mode = false,
         .count_matches_mode = true,
         .compiled_regex = NULL,
-        .max_count = SIZE_MAX};
+        .max_count = SIZE_MAX,
+        .ac_trie = NULL};
+
+    // Build the trie
+    params_empty.ac_trie = ac_trie_build(&params_empty);
+
     matches = aho_corasick_search(&params_empty, text, text_len, NULL);
     TEST_ASSERT(matches == 0, "Aho-Corasick finds 0 matches with empty pattern list");
+
+    // Free the trie
+    ac_trie_free(params_empty.ac_trie);
 
     // Test patterns longer than text
     const char *patterns_long[] = {"abcd", "abcde"};
@@ -200,9 +263,23 @@ void test_aho_corasick_edge_cases(void)
         .count_lines_mode = false,
         .count_matches_mode = true,
         .compiled_regex = NULL,
-        .max_count = SIZE_MAX};
+        .max_count = SIZE_MAX,
+        .ac_trie = NULL};
+
+    // Build the trie
+    params_long.ac_trie = ac_trie_build(&params_long);
+    if (!params_long.ac_trie)
+    {
+        printf("✗ FAIL: Failed to build Aho-Corasick trie in edge case test (long patterns)\n");
+        tests_failed++;
+        return; // Cannot proceed
+    }
+
     matches = aho_corasick_search(&params_long, text, text_len, NULL);
     TEST_ASSERT(matches == 0, "Aho-Corasick finds 0 matches when patterns are longer than text");
+
+    // Free the trie
+    ac_trie_free(params_long.ac_trie);
 }
 
 /**
@@ -229,13 +306,24 @@ void test_position_tracking_multipattern(void)
         .count_lines_mode = false,
         .count_matches_mode = false,
         .compiled_regex = NULL,
-        .max_count = SIZE_MAX};
+        .max_count = SIZE_MAX,
+        .ac_trie = NULL};
+
+    // Build the trie
+    params.ac_trie = ac_trie_build(&params);
+    if (!params.ac_trie)
+    {
+        printf("✗ FAIL: Failed to build Aho-Corasick trie in position tracking test\n");
+        tests_failed++;
+        return; // Cannot proceed
+    }
 
     // Create result structure to collect positions
     match_result_t *result = match_result_init(10);
     if (!result)
     {
         fprintf(stderr, "Failed to create match_result in position tracking test\n");
+        ac_trie_free(params.ac_trie);
         return;
     }
 
@@ -248,6 +336,7 @@ void test_position_tracking_multipattern(void)
 
     // Clean up
     match_result_free(result);
+    ac_trie_free(params.ac_trie);
 }
 
 /**
@@ -332,7 +421,18 @@ void test_multipattern_performance(void)
         .count_lines_mode = false,  // Don't count lines
         .count_matches_mode = true, // Indicate intent to count matches
         .compiled_regex = NULL,
-        .max_count = SIZE_MAX};
+        .max_count = SIZE_MAX,
+        .ac_trie = NULL};
+
+    // Build the trie
+    params.ac_trie = ac_trie_build(&params);
+    if (!params.ac_trie)
+    {
+        printf("✗ FAIL: Failed to build Aho-Corasick trie in performance test\n");
+        tests_failed++;
+        free(text);
+        return; // Cannot proceed
+    }
 
     // Call the actual aho_corasick_search function
     uint64_t matches_combined = aho_corasick_search(&params, text, text_size, NULL);
@@ -366,7 +466,128 @@ void test_multipattern_performance(void)
                 "Both search methods found the same number of matches");
 
     // Cleanup
+    ac_trie_free(params.ac_trie);
     free(text);
+}
+
+/**
+ * Test for performance comparison between individual searches and combined search
+ */
+void test_multiple_patterns_performance(void)
+{
+    printf("\n=== Multiple Pattern Performance Test ===\n");
+
+    // Create a large text (1 MB)
+    const size_t TEXT_SIZE = 1 * 1024 * 1024;
+    char *large_text = malloc(TEXT_SIZE + 1);
+    if (!large_text)
+    {
+        fprintf(stderr, "Failed to allocate memory for large text\n");
+        return;
+    }
+
+    // Fill with random printable ASCII
+    for (size_t i = 0; i < TEXT_SIZE; i++)
+    {
+        large_text[i] = ' ' + (rand() % 95); // ASCII 32-126
+    }
+    large_text[TEXT_SIZE] = '\0';
+
+    // Insert known patterns at random positions
+    const char *patterns[] = {
+        "pattern1", "pattern2", "pattern3", "pattern4", "pattern5"};
+    const size_t NUM_PATTERNS = sizeof(patterns) / sizeof(patterns[0]);
+    const size_t NUM_INSERTIONS = 10; // Insert each pattern 10 times
+
+    for (size_t p = 0; p < NUM_PATTERNS; p++)
+    {
+        size_t pattern_len = strlen(patterns[p]);
+        for (size_t i = 0; i < NUM_INSERTIONS; i++)
+        {
+            size_t pos = rand() % (TEXT_SIZE - pattern_len);
+            memcpy(large_text + pos, patterns[p], pattern_len);
+        }
+    }
+
+    // Measure individual search time
+    double start_time = (double)clock() / CLOCKS_PER_SEC;
+    uint64_t individual_total = 0;
+
+    for (size_t p = 0; p < NUM_PATTERNS; p++)
+    {
+        search_params_t params = {
+            .pattern = patterns[p],
+            .pattern_len = strlen(patterns[p]),
+            .case_sensitive = true,
+            .use_regex = false,
+            .track_positions = false,
+            .count_lines_mode = false,
+            .count_matches_mode = true,
+            .compiled_regex = NULL,
+            .max_count = SIZE_MAX};
+        individual_total += boyer_moore_search(&params, large_text, TEXT_SIZE, NULL);
+    }
+
+    double individual_time = (double)clock() / CLOCKS_PER_SEC - start_time;
+
+    // Create combined search params
+    search_params_t multi_params = {
+        .patterns = patterns,
+        .pattern_lens = malloc(NUM_PATTERNS * sizeof(size_t)),
+        .num_patterns = NUM_PATTERNS,
+        .case_sensitive = true,
+        .use_regex = false,
+        .track_positions = false,
+        .count_lines_mode = false,
+        .count_matches_mode = true,
+        .compiled_regex = NULL,
+        .max_count = SIZE_MAX,
+        .ac_trie = NULL};
+
+    for (size_t p = 0; p < NUM_PATTERNS; p++)
+    {
+        multi_params.pattern_lens[p] = strlen(patterns[p]);
+    }
+
+    // Build the trie
+    multi_params.ac_trie = ac_trie_build(&multi_params);
+    if (!multi_params.ac_trie)
+    {
+        printf("✗ FAIL: Failed to build Aho-Corasick trie in multiple patterns performance test\n");
+        tests_failed++;
+        free(multi_params.pattern_lens);
+        free(large_text);
+        return; // Cannot proceed
+    }
+
+    // Measure combined search time
+    start_time = (double)clock() / CLOCKS_PER_SEC;
+    uint64_t combined_total = aho_corasick_search(&multi_params, large_text, TEXT_SIZE, NULL);
+    double combined_time = (double)clock() / CLOCKS_PER_SEC - start_time;
+
+    // Report results
+    printf("Testing with 1 MB text and 5 patterns...\n");
+    printf("  Individual searches: %" PRIu64 " matches in %.6f seconds\n",
+           individual_total, individual_time);
+    printf("  Combined search: %" PRIu64 " matches in %.6f seconds\n",
+           combined_total, combined_time);
+
+    if (combined_time > 0)
+    {
+        printf("  Speed improvement: %.2fx\n", individual_time / combined_time);
+    }
+    else
+    {
+        printf("  Combined search too fast to calculate ratio.\n");
+    }
+
+    TEST_ASSERT(combined_total == individual_total,
+                "Both search methods found the same number of matches");
+
+    // Cleanup
+    ac_trie_free(multi_params.ac_trie);
+    free(multi_params.pattern_lens);
+    free(large_text);
 }
 
 /**
@@ -381,6 +602,7 @@ void run_multiple_patterns_tests(void)
     test_aho_corasick_edge_cases();
     test_position_tracking_multipattern();
     test_multipattern_performance();
+    test_multiple_patterns_performance();
 
     printf("\n--- Completed Multiple Pattern Tests ---\n");
 }

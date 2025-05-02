@@ -79,6 +79,7 @@ static search_params_t create_base_params(const char *pattern,
     params.track_positions = !(count_lines && !only_match);
     params.compiled_regex = NULL;
     params.max_count = SIZE_MAX;
+    params.ac_trie = NULL; // Initialize to NULL
     // legacy single‐pattern fields
     params.pattern = params.patterns[0];
     params.pattern_len = params.pattern_lens[0];
@@ -146,6 +147,12 @@ void cleanup_params(search_params_t *params)
     {
         free(params->pattern_lens);
         params->pattern_lens = NULL;
+    }
+    // Free Aho-Corasick trie if allocated
+    if (params->ac_trie)
+    {
+        ac_trie_free(params->ac_trie);
+        params->ac_trie = NULL;
     }
     // Note: Does not free ac_trie, handled separately
 }
@@ -810,7 +817,7 @@ void test_max_count_new(void)
 
     // --- Aho-Corasick Search (Multiple Patterns) ---
     printf("--- Aho-Corasick Search ---\n");
-    const char *ac_text = "apple banana apple orange apple grape apple";
+    const char *ac_text = "apple banana apple orange apple banana orange apple orange";
     size_t ac_text_len = strlen(ac_text);
     const char *ac_patterns[] = {"apple", "orange"};
     size_t ac_pattern_lens[] = {5, 6};
@@ -824,31 +831,50 @@ void test_max_count_new(void)
         .count_lines_mode = false,
         .count_matches_mode = false,
         .compiled_regex = NULL,
-        .max_count = SIZE_MAX // Default
+        .max_count = SIZE_MAX, // Default
+        .ac_trie = NULL        // Initialize to NULL
     };
 
+    // Build trie before using it
+    params_ac.ac_trie = ac_trie_build(&params_ac);
+    if (!params_ac.ac_trie)
+    {
+        printf("✗ FAIL: Failed to build Aho-Corasick trie in max_count test\n");
+        tests_failed++;
+        return; // Cannot proceed
+    }
+
+    // Test with max_count = 3
     params_ac.max_count = 3;
     result = match_result_init(10);
-    TEST_ASSERT(aho_corasick_search(&params_ac, ac_text, ac_text_len, result) == 3, "Aho-Corasick finds 3 matches with limit 3");
+    TEST_ASSERT(aho_corasick_search(&params_ac, ac_text, ac_text_len, result) == 3,
+                "Aho-Corasick finds 3 matches with limit 3");
     TEST_ASSERT(result->count == 3, "Aho-Corasick result has 3 positions with limit 3");
     match_result_free(result);
     result = NULL;
 
-    params_ac.max_count = 5; // Total matches are 4 'apple' + 1 'orange' = 5
+    // Test with max_count = 5
+    params_ac.max_count = 5; // There are 7 total matches (4 apple, 3 orange)
     result = match_result_init(10);
-    TEST_ASSERT(aho_corasick_search(&params_ac, ac_text, ac_text_len, result) == 5, "Aho-Corasick finds 5 matches with limit 5");
+    TEST_ASSERT(aho_corasick_search(&params_ac, ac_text, ac_text_len, result) == 5,
+                "Aho-Corasick finds 5 matches with limit 5");
     TEST_ASSERT(result->count == 5, "Aho-Corasick result has 5 positions with limit 5");
     match_result_free(result);
     result = NULL;
 
+    // Test with max_count = 6 (should find 6 matches)
     params_ac.max_count = 6;
     result = match_result_init(10);
-    TEST_ASSERT(aho_corasick_search(&params_ac, ac_text, ac_text_len, result) == 5, "Aho-Corasick finds 5 matches with limit 6");
-    TEST_ASSERT(result->count == 5, "Aho-Corasick result has 5 positions with limit 6");
+    uint64_t matches_with_limit_6 = aho_corasick_search(&params_ac, ac_text, ac_text_len, result);
+    TEST_ASSERT(matches_with_limit_6 == 6, // Expect 6 matches
+                "Aho-Corasick finds 6 matches with limit 6");
+    TEST_ASSERT(result->count == 6, // Expect 6 positions
+                "Aho-Corasick result has 6 positions with limit 6");
     match_result_free(result);
     result = NULL;
 
-    // No cleanup_params needed for stack-allocated params_ac
+    // Free the trie
+    ac_trie_free(params_ac.ac_trie);
 }
 
 /**
@@ -927,21 +953,38 @@ void test_additional_cases(void)
 
     // --- Multiple patterns (Aho-Corasick) ---
     {
-        const char *text = "foo bar baz foo bar";
-        const char *ac_patterns[] = {"foo", "bar"};
-        size_t ac_pattern_lens[] = {3, 3};
-        search_params_t params = {
-            .patterns = ac_patterns,
-            .pattern_lens = ac_pattern_lens,
+        const char *ac_multipattern_text = "foo bar baz foo qux bar";
+        const char *multi_patterns[] = {"foo", "bar"};
+        size_t multi_lens[] = {3, 3};
+        search_params_t params_multi = {
+            .patterns = multi_patterns,
+            .pattern_lens = multi_lens,
             .num_patterns = 2,
             .case_sensitive = true,
             .use_regex = false,
             .track_positions = false,
             .count_lines_mode = false,
-            .count_matches_mode = false,
+            .count_matches_mode = true,
             .compiled_regex = NULL,
-            .max_count = SIZE_MAX};
-        TEST_ASSERT(aho_corasick_search(&params, text, strlen(text), NULL) == 4, "Aho-Corasick: finds all 'foo' and 'bar'");
+            .max_count = SIZE_MAX,
+            .ac_trie = NULL // Initialize to NULL
+        };
+
+        // Build trie before using it
+        params_multi.ac_trie = ac_trie_build(&params_multi);
+        if (!params_multi.ac_trie)
+        {
+            printf("✗ FAIL: Failed to build Aho-Corasick trie in edge case test\n");
+            tests_failed++;
+        }
+        else
+        {
+            TEST_ASSERT(
+                aho_corasick_search(&params_multi, ac_multipattern_text, strlen(ac_multipattern_text), NULL) == 4,
+                "Aho-Corasick: finds all 'foo' and 'bar'");
+            // Free the trie
+            ac_trie_free(params_multi.ac_trie);
+        }
     }
 
     // --- Binary data (should not match printable pattern) ---
