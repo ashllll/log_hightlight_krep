@@ -1063,7 +1063,7 @@ double get_time(void)
 // Print usage information
 void print_usage(const char *program_name)
 {
-    printf("krep v%s - A high-performance string search utility (Optimized)\n\n", VERSION);
+    printf("krep v%s - A high-performance string search utility\n\n", VERSION);
     printf("Usage: %s [OPTIONS] PATTERN [FILE | DIRECTORY]\n", program_name);
     printf("   or: %s [OPTIONS] -e PATTERN [-e PATTERN...] [FILE | DIRECTORY]\n", program_name);
     printf("   or: %s [OPTIONS] -f FILE [FILE | DIRECTORY]\n", program_name);
@@ -1303,7 +1303,7 @@ uint64_t regex_search(const search_params_t *params,
 
     const regex_t *regex = params->compiled_regex;
     regmatch_t pmatch[1];
-    int base_eflags = REG_STARTEND | REG_NEWLINE | (params->case_sensitive ? 0 : REG_ICASE);
+    int base_eflags = REG_STARTEND | REG_NEWLINE | (params->case_sensitive ? 0 : REG_ICASE); // REG_NEWLINE is already part of base_eflags through compilation flags
     const char *cur = text_start;
     size_t rem = text_len;
     size_t last_line = SIZE_MAX;
@@ -1313,9 +1313,6 @@ uint64_t regex_search(const search_params_t *params,
     while (rem > 0 || (rem == 0 && cur == text_start)) // Allow one check for empty string match
     {
         // Ensure we don't search past the end if rem becomes 0 mid-loop
-        if (rem == 0 && cur != text_start)
-            break;
-
         pmatch[0].rm_so = 0;
         pmatch[0].rm_eo = rem; // Search up to the remaining length
         // REG_NOTBOL is set if we are not at the absolute start of the original text
@@ -1355,11 +1352,16 @@ uint64_t regex_search(const search_params_t *params,
         {
             fprintf(stderr, "krep: Warning: regexec returned eo < so.\n");
             // Advance past this point to avoid infinite loop
-            size_t adv = 1;
-            if (cur + adv > text_start + text_len)
-                break; // Don't go past end
-            cur += adv;
-            rem = (text_start + text_len) - cur; // Recalculate remaining
+            const char *next_cur = cur + so + 1;
+            if (next_cur > text_start + text_len)
+            {
+                cur = text_start + text_len;
+            }
+            else
+            {
+                cur = next_cur;
+            }
+            rem = (text_start + text_len) - cur;
             continue;
         }
 
@@ -1370,21 +1372,27 @@ uint64_t regex_search(const search_params_t *params,
         if (params->whole_word && !is_whole_word_match(text_start, text_len, start, end))
         {
             // If whole word check fails, we need to advance past the start of this failed match
-            size_t adv = so + 1; // Advance at least one byte past the start
-            if (cur + adv > text_start + text_len)
-                break;
-            cur += adv;
+            // Advance 'cur' by the start offset of the failed match within 'cur' + 1
+            const char *next_cur = cur + so + 1;
+            if (next_cur > text_start + text_len)
+            {
+                cur = text_start + text_len;
+            }
+            else
+            {
+                cur = next_cur;
+            }
             rem = (text_start + text_len) - cur;
             continue;
         }
 
         if (params->count_lines_mode)
         {
-            size_t line_start = find_line_start(text_start, text_len, start);
-            if (line_start != last_line)
+            size_t line_start_offset = find_line_start(text_start, text_len, start);
+            if (line_start_offset != last_line)
             {
                 count++;
-                last_line = line_start;
+                last_line = line_start_offset;
             }
         }
         else
@@ -1397,51 +1405,50 @@ uint64_t regex_search(const search_params_t *params,
         }
 
         // Check max_count limit
-        if (max_count != SIZE_MAX && count >= max_count)
+        if (count >= max_count)
             break;
 
-        // Advance logic: Start next search *after* the current match.
-        // If the match was zero-length, advance by one character to avoid infinite loop.
-        size_t adv = eo; // Advance to the end of the match relative to cur
+        // Advance cur to continue searching from the end of the current match.
+        // If the match was zero-length, advance by one character from the start of the match
+        // to prevent infinite loops and ensure progress.
+        size_t advance_by_in_slice = eo; // End offset of match within the current slice `cur`
         if (so == eo)
-        {             // Zero-length match
-            adv += 1; // Advance by at least one character
+        {                                 // Zero-length match
+            advance_by_in_slice = so + 1; // Advance by 1 from the start of the zero-length match
         }
 
-        // Ensure advancement doesn't exceed remaining buffer
-        if (adv == 0)
-        {            // Should only happen if eo=0 and so=0
-            adv = 1; // Force advance by 1 if match is at start and zero-length
-        }
+        // Ensure that cur always advances if a match is found and we are not at the end of text.
+        // This is particularly important if advance_by_in_slice could somehow be 0 when so != eo (should not happen).
+        // The (so == eo) case already ensures advance_by_in_slice is at least so + 1.
+        // If so < eo, then advance_by_in_slice = eo > so, so cur will advance.
 
-        if (adv > rem)
-        {          // Should not happen if eo <= rem
-            break; // Cannot advance further
-        }
+        const char *next_search_start = cur + advance_by_in_slice;
 
-        // Check if advancing goes beyond the original text length
-        if (cur + adv > text_start + text_len)
+        if (next_search_start > text_start + text_len)
         {
-            break;
+            cur = text_start + text_len; // Move to the very end
+        }
+        else if (next_search_start <= cur && text_len > 0 && (cur < text_start + text_len))
+        {
+            // This case should ideally not be hit if so <= eo and zero-length matches advance by at least 1.
+            // Force advancement by at least one character from current `cur` if stuck.
+            // This might happen if `so` and `eo` are both 0 and `cur` is not advanced.
+            // The `so + 1` for zero-length matches should prevent this.
+            // As a safeguard:
+            cur = cur + 1;
+        }
+        else
+        {
+            cur = next_search_start;
         }
 
-        cur += adv;
-        // Recalculate remaining length based on the new 'cur' position
+        if (cur > text_start + text_len)
+        { // Should be caught by prior check, but defensive
+            cur = text_start + text_len;
+        }
         rem = (text_start + text_len) - cur;
 
-        // Break if we advanced past the end (safety)
-        if (cur > text_start + text_len)
-        {
-            break;
-        }
-
-        // Handle potential edge case for empty string match at the very end
-        if (cur == text_start + text_len && rem == 0 && so == eo && start == text_len)
-        {
-            // If we found a zero-length match exactly at the end, stop.
-            break;
-        }
-    }
+    } // end while
 
     return count;
 }
@@ -3094,7 +3101,26 @@ int main(int argc, char *argv[])
         break;
         case 's': // Search string mode
             string_mode = true;
-            target_arg = optarg;
+            // optarg is the PATTERN for string mode.
+            // Add it to the list of patterns.
+            if (num_patterns_found < MAX_PATTERN_LENGTH)
+            {
+                pattern_args[num_patterns_found] = optarg;
+                pattern_lens[num_patterns_found] = strlen(optarg);
+                pattern_needs_free[num_patterns_found] = false; // Pattern is from argv, no free needed by this array
+                num_patterns_found++;
+            }
+            else
+            {
+                fprintf(stderr, "krep: Error: Too many patterns specified.\n");
+                for (size_t i = 0; i < num_patterns_found; ++i)
+                {
+                    if (pattern_needs_free[i])
+                        free(pattern_args[i]);
+                }
+                return 2;
+            }
+            // STRING_TO_SEARCH (target_arg) will be the next non-option argument.
             break;
         case 'f': // Read patterns from file
         {
@@ -3211,17 +3237,21 @@ int main(int argc, char *argv[])
 
     // Get pattern argument(s)
     if (num_patterns_found == 0)
-    { // No patterns from -e or -f
-        if (optind >= argc)
+    {                      // No patterns from -e, -f, or -s
+        if (optind < argc) // A non-option argument exists, this is the PATTERN
         {
-            fprintf(stderr, "krep: Error: No pattern specified.\n");
+            pattern_args[0] = argv[optind];
+            pattern_lens[0] = strlen(pattern_args[0]);
+            pattern_needs_free[0] = false; // Pattern is from argv
+            num_patterns_found = 1;
+            optind++;
+        }
+        else // No pattern argument provided at all
+        {
+            fprintf(stderr, "krep: Error: PATTERN argument missing.\n");
             print_usage(argv[0]);
             return 2;
         }
-        pattern_args[0] = argv[optind++]; // Consume the pattern argument
-        pattern_lens[0] = strlen(pattern_args[0]);
-        pattern_needs_free[0] = false; // Pattern from argv, no need to free
-        num_patterns_found = 1;
     }
 
     // Assign patterns to params struct
@@ -3236,37 +3266,55 @@ int main(int argc, char *argv[])
     }
 
     // Get target argument (file, directory, or string to search)
-    if (optind >= argc)
-    { // No more arguments left
-        if (recursive_mode && !string_mode)
+    if (string_mode)
+    {
+        // In string mode, the next non-option argument is STRING_TO_SEARCH
+        if (optind < argc)
         {
-            target_arg = "."; // Default to current directory for -r
-        }
-        else if (!string_mode && !recursive_mode && isatty(STDIN_FILENO))
-        {
-            fprintf(stderr, "krep: Error: FILE or DIRECTORY argument missing.\n");
-            print_usage(argv[0]);
-            return 2;
-        }
-        else if (!string_mode && !recursive_mode)
-        {
-            target_arg = "-"; // Use "-" for stdin
-        }
-        else if (string_mode)
-        {
-            fprintf(stderr, "krep: Error: STRING_TO_SEARCH argument missing for -s.\n");
-            print_usage(argv[0]);
-            return 2;
+            target_arg = argv[optind];
+            optind++;
         }
         else
         {
-            print_usage(argv[0]); // Unexpected case
+            // No non-option argument left for STRING_TO_SEARCH
+            fprintf(stderr, "krep: Error: STRING_TO_SEARCH argument missing for -s.\n");
+            for (size_t i = 0; i < num_patterns_found; ++i)
+            {
+                if (pattern_needs_free[i])
+                    free(pattern_args[i]);
+            }
+            print_usage(argv[0]);
             return 2;
         }
     }
     else
     {
-        target_arg = argv[optind++]; // Target is the next argument
+        // Not string mode, target is FILE/DIRECTORY or stdin
+        if (optind < argc)
+        { // A non-option argument exists for file/directory
+            target_arg = argv[optind];
+            optind++;
+        }
+        else
+        {
+            // No file/directory specified.
+            // If a pattern was given and stdin is not a tty, input will be from stdin.
+            // target_arg remains NULL for stdin.
+            // If stdin is a tty, it's an error because no file/pipe is provided.
+            if (num_patterns_found > 0 && isatty(STDIN_FILENO))
+            {
+                fprintf(stderr, "krep: Error: Target file/directory missing and no input from pipe/redirect.\n");
+                for (size_t i = 0; i < num_patterns_found; ++i)
+                {
+                    if (pattern_needs_free[i])
+                        free(pattern_args[i]);
+                }
+                print_usage(argv[0]);
+                return 2;
+            }
+            // If num_patterns_found == 0, error was already caught.
+            // If !isatty(STDIN_FILENO), target_arg is NULL (stdin).
+        }
     }
 
     // Check for extra arguments

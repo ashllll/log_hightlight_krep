@@ -1,4 +1,4 @@
-/* krep.h - Header file for krep utility (Optimized Version)
+/* krep.h - Header file for krep utility
  *
  * Author: Davide Santangelo
  * Year: 2025
