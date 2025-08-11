@@ -1,0 +1,47 @@
+Advanced DLL exports:
+	[Name Pointer/Ordinal] Table	0000000e
+	[   0] +base[   1] 000030c0 Export RVA
+	[   1] +base[   2] 00003b40 Export RVA
+	[   2] +base[   3] 00002e10 Export RVA
+	[   3] +base[   4] 00003b00 Export RVA
+	[   4] +base[   5] 00002ea0 Export RVA
+	[   5] +base[   6] 00002a20 Export RVA
+	[   6] +base[   7] 00002ef0 Export RVA
+	[   7] +base[   8] 00002dd0 Export RVA
+	[   8] +base[   9] 00002d70 Export RVA
+	[   9] +base[  10] 000024b0 Export RVA
+	[  10] +base[  11] 00003790 Export RVA
+	[  11] +base[  12] 00003130 Export RVA
+	[  12] +base[  13] 00002c20 Export RVA
+	[  13] +base[  14] 00003060 Export RVA
+[Ordinal/Name Pointer] Table -- Ordinal Base 1
+	[   0] +base[   1]  0000 detect_binary_content
+	[   1] +base[   2]  0001 file_exists
+	[   2] +base[   3]  0002 get_algorithm_name
+	[   3] +base[   4]  0003 get_file_size
+	[   4] +base[   5]  0004 get_version_advanced
+	[   5] +base[   6]  0005 is_binary_file
+	[   6] +base[   7]  0006 map_file
+	[   7] +base[   8]  0007 match_result_free
+	[   8] +base[   9]  0008 match_result_init
+	[   9] +base[  10]  0009 search_advanced
+	[  10] +base[  11]  000a search_directory_recursive
+	[  11] +base[  12]  000b search_file_advanced
+	[  12] +base[  13]  000c should_skip_directory
+	[  13] +base[  14]  000d unmap_file
+
+Simple DLL exports:
+	[Name Pointer/Ordinal] Table	00000006
+	[   0] +base[   1] 00001800 Export RVA
+	[   1] +base[   2] 00001360 Export RVA
+	[   2] +base[   3] 00001400 Export RVA
+	[   3] +base[   4] 00001300 Export RVA
+	[   4] +base[   5] 000017b0 Export RVA
+	[   5] +base[   6] 00001440 Export RVA
+[Ordinal/Name Pointer] Table -- Ordinal Base 1
+	[   0] +base[   1]  0000 get_version
+	[   1] +base[   2]  0001 match_result_add
+	[   2] +base[   3]  0002 match_result_free
+	[   3] +base[   4]  0003 match_result_init
+	[   4] +base[   5]  0004 search_buffer
+	[   5] +base[   6]  0005 search_string_simple

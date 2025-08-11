@@ -1,0 +1,25 @@
+LIBRARY krep_advanced
+EXPORTS
+    ; Core Search Functions
+    search_advanced
+    
+    ; Match Result Management
+    match_result_init
+    match_result_free
+    
+    ; File Operations
+    map_file
+    unmap_file
+    search_file_advanced
+    search_directory_recursive
+    
+    ; File Type Detection
+    is_binary_file
+    should_skip_directory
+    detect_binary_content
+    
+    ; Utilities
+    get_algorithm_name
+    get_version_advanced
+    get_file_size
+    file_exists
