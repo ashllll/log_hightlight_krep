@@ -1,8 +1,0 @@
-LIBRARY krep_simple
-EXPORTS
-    match_result_init
-    match_result_add
-    match_result_free
-    search_string_simple
-    search_buffer
-    get_version
