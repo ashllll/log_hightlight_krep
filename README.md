@@ -1,235 +1,270 @@
-# krep Advanced Windows DLL - 发布包
+# K(r)ep - A high-performance string search utility
 
-🔍 **高性能字符串搜索库** | 完整实现 krep 的所有高级功能 | 🚀 **生产就绪**
+![Version](https://img.shields.io/badge/version-1.2-blue)
+![License](https://img.shields.io/badge/license-BSD-green)
 
-## 📦 发布包内容
+`krep` is an optimized string search utility designed for maximum throughput and efficiency when processing large files and directories. It is built with performance in mind, offering multiple search algorithms and SIMD acceleration when available.
+
+> **Note:**  
+> Krep is not intended to be a full replacement or direct competitor to feature-rich tools like `grep` or `ripgrep`. Instead, it aims to be a minimal, efficient, and pragmatic tool focused on speed and simplicity.  
+>  
+> Krep provides the essential features needed for fast searching, without the extensive options and complexity of more comprehensive search utilities. Its design philosophy is to deliver the fastest possible search for the most common use cases, with a clean and minimal interface.
+
+## 🎉 NEW: Windows DLL Release Package
+
+This repository now includes a **complete Windows DLL release package** that provides all krep advanced features as a Windows dynamic library!
+
+### 📦 Windows DLL Package Contents
 
 ```
 krep-advanced-dll-release/
-├── README.md                    # 本文件
-├── lib/                         # 库文件目录
-│   ├── krep_advanced.dll        # 主要 DLL 库 (119KB)
-│   └── libkrep_advanced.dll.a   # 导入库 (10KB)
-├── include/                     # 头文件目录
-│   └── krep_advanced.h          # 完整 API 头文件
-├── docs/                        # 文档目录
-│   ├── USER_GUIDE.md            # 完整使用指南 (1500+ 行)
-│   └── FINAL_TEST_REPORT.md     # 测试报告
-└── examples/                    # 示例代码目录
-    ├── basic_search.c           # 基础搜索示例
-    ├── file_search.c            # 文件搜索示例
-    ├── performance_demo.c       # 性能演示
-    └── Makefile                 # 编译脚本
+├── README.md                    # This file
+├── lib/                         # Library files
+│   ├── krep_advanced.dll        # Main DLL library (119KB)
+│   └── libkrep_advanced.dll.a   # Import library (10KB)
+├── include/                     # Header files
+│   └── krep_advanced.h          # Complete API header
+├── docs/                        # Documentation
+│   ├── USER_GUIDE.md            # Complete usage guide (1500+ lines)
+│   └── FINAL_TEST_REPORT.md     # Test report
+└── examples/                    # Example code
+    ├── basic_search.c           # Basic search example
+    ├── file_search.c            # File search example
+    ├── performance_demo.c       # Performance demo
+    └── Makefile                 # Build script
 ```
 
-## ✨ 核心特性
+### 🚀 Windows DLL Features
 
-### 🧠 智能算法选择
-- **Boyer-Moore-Horspool**: 大多数字面字符串搜索的主算法
-- **Knuth-Morris-Pratt (KMP)**: 短模式串和重复模式优化
-- **memchr 优化**: 单字符模式的高效搜索
-- **自动选择**: 根据模式特征智能选择最优算法
+- ✅ **Smart Algorithm Selection** (Boyer-Moore, KMP, memchr, SIMD)
+- ✅ **Multi-threading Architecture** (auto CPU detection, smart load balancing)
+- ✅ **Memory-mapped I/O** (Windows CreateFileMapping optimization)
+- ✅ **SIMD Hardware Acceleration** (SSE4.2 support)
+- ✅ **File Type Detection** (binary file skip, directory filtering)
+- ✅ **100% Command-line Options Support** (-i, -c, -w, -m, -t, --no-simd)
 
-### 🚀 多线程架构
-- **自动 CPU 核心检测**: 根据系统配置自动调整线程数
-- **大文件并行处理**: 2MB+ 文件自动启用多线程
-- **智能负载均衡**: 基于文件大小的线程数优化
-
-### 💾 内存映射 I/O
-- **Windows 优化**: 使用 `CreateFileMapping`/`MapViewOfFile`
-- **跨平台支持**: 兼容 Windows 和 Unix `mmap`
-- **渐进式预取**: 大文件的智能预读机制
-
-### ⚡ SIMD 硬件加速
-- **SSE4.2 支持**: 针对支持的 CPU 启用加速
-- **自动检测**: CPU 特性自动检测
-- **回退机制**: 不支持时自动回退到标准算法
-
-### 📁 文件类型检测
-- **二进制文件跳过**: 自动识别并跳过二进制格式
-- **目录过滤**: 智能跳过版本控制、依赖、构建目录
-- **内容检测**: 基于文件内容的二进制判断
-
-## 🚀 快速开始
-
-### 1. 环境要求
-
-- **编译器**: MinGW-w64 或兼容的 GCC
-- **系统**: Windows 7+ (x64)
-- **内存**: 建议 4GB+ RAM
-
-### 2. 基本使用
+### 🎯 Quick Start (Windows DLL)
 
 ```c
 #include "krep_advanced.h"
 
 int main() {
-    // 1. 定义搜索模式
+    // 1. Define search patterns
     const char *patterns[] = {"search"};
     size_t lens[] = {6};
     
-    // 2. 创建搜索参数
+    // 2. Create search parameters
     advanced_search_params_t params = KREP_PARAMS_INIT(patterns, lens, 1);
     
-    // 3. 执行搜索
+    // 3. Execute search
     match_result_t *result = match_result_init(10);
     uint64_t matches = search_advanced(&params, "text to search", 14, result);
     
-    // 4. 处理结果
-    printf("Found %llu matches\\n", matches);
+    // 4. Process results
+    printf("Found %llu matches\n", matches);
     
-    // 5. 清理
+    // 5. Cleanup
     match_result_free(result);
     return 0;
 }
 ```
 
-### 3. 编译命令
+### 📖 Windows DLL Documentation
 
-```bash
-# 基本编译
-gcc your_program.c -I./include -L./lib -lkrep_advanced -o your_program.exe
-
-# 优化编译
-gcc -O2 -std=c11 your_program.c -I./include -L./lib -lkrep_advanced -o your_program.exe
-```
-
-### 4. 部署
-
-将 `lib/krep_advanced.dll` 放置在以下位置之一：
-- 与您的 `.exe` 文件相同目录
-- Windows 系统 PATH 中的目录  
-- Windows/System32 目录 (需要管理员权限)
-
-## 📖 完整文档
-
-### 核心文档
-- **[USER_GUIDE.md](docs/USER_GUIDE.md)** - 完整使用指南 (1500+ 行)
-  - 🎯 100% API 覆盖
-  - 📝 详细示例代码
-  - ⚙️ 所有配置选项说明
-  - 🔧 性能优化建议
-
-- **[FINAL_TEST_REPORT.md](docs/FINAL_TEST_REPORT.md)** - 测试报告
-  - ✅ 100% 功能验证
-  - 📊 性能基准测试
-  - 🧪 错误处理验证
-
-### 示例代码
-- **[basic_search.c](examples/basic_search.c)** - 基础搜索功能演示
-- **[file_search.c](examples/file_search.c)** - 文件搜索和内存映射
-- **[performance_demo.c](examples/performance_demo.c)** - 性能测试和优化
-
-## 🎛️ 所有命令行选项支持
-
-| krep 选项 | DLL 实现 | 功能说明 |
-|-----------|----------|----------|
-| `-i, --ignore-case` | `KREP_SET_IGNORE_CASE(&params)` | 不区分大小写搜索 |
-| `-c, --count` | `KREP_SET_COUNT_ONLY(&params)` | 仅输出匹配计数 |
-| `-o, --only-matching` | `KREP_SET_ONLY_MATCHING(&params)` | 仅输出匹配部分 |
-| `-w, --word-regexp` | `KREP_SET_WHOLE_WORD(&params)` | 全词匹配 |
-| `-E, --extended-regexp` | `KREP_SET_REGEX(&params)` | 正则表达式支持 |
-| `-m NUM, --max-count=NUM` | `KREP_SET_MAX_COUNT(&params, NUM)` | 限制最大匹配数 |
-| `-t NUM, --threads=NUM` | `KREP_SET_THREADS(&params, NUM)` | 指定线程数 |
-| `--no-simd` | `KREP_DISABLE_SIMD(&params)` | 禁用 SIMD 加速 |
-| `-e PATTERN` | 多模式数组 | 多模式搜索 |
-| `-r, --recursive` | `search_directory_recursive()` | 递归目录搜索 |
-
-## 📊 性能特性
-
-### 算法性能 (1MB 文件)
-- **自动选择**: 1.8ms ✨ (最优)
-- **Boyer-Moore**: 2.1ms  
-- **KMP**: 2.8ms
-- **memchr**: 1.8ms (单字符)
-
-### 多线程加速 (2MB 文件)
-- **单线程**: 4.2ms
-- **2线程**: 2.4ms (1.75x 加速)
-- **4线程**: 1.8ms (2.33x 加速)
-- **8线程**: 1.6ms (2.63x 加速)
-
-## 🔧 API 参考
-
-### 核心数据结构
-```c
-// 搜索参数
-typedef struct {
-    const char **patterns;       // 模式数组
-    size_t *pattern_lens;       // 长度数组
-    size_t num_patterns;        // 模式数量
-    bool case_sensitive;        // 区分大小写
-    bool whole_word;           // 全词匹配
-    search_algorithm_t force_algorithm;  // 强制算法
-    int thread_count;          // 线程数
-    // ... 更多选项
-} advanced_search_params_t;
-
-// 匹配结果
-typedef struct {
-    match_position_t *positions;  // 位置数组
-    uint64_t count;              // 匹配数量
-    uint64_t capacity;           // 数组容量
-} match_result_t;
-```
-
-### 主要函数
-```c
-// 核心搜索
-uint64_t search_advanced(const advanced_search_params_t *params,
-                        const char *text, size_t text_len,
-                        match_result_t *result);
-
-// 文件操作
-mapped_file_t* map_file(const char *filename);
-void unmap_file(mapped_file_t *mf);
-
-// 内存管理
-match_result_t* match_result_init(uint64_t initial_capacity);
-void match_result_free(match_result_t *result);
-```
-
-## 🏆 生产就绪特性
-
-### ✅ 完整性验证
-- 🎯 **功能完成度**: 100% 实现所有高级特性
-- 📊 **测试覆盖**: 100% 通过所有功能测试
-- 🔒 **稳定性**: 通过所有错误处理和边界测试
-- 🖥️ **兼容性**: Windows 平台完全兼容
-
-### ✅ 性能保证
-- ⚡ **高效算法**: 智能选择最优搜索算法
-- 🚀 **多线程**: 大文件自动并行处理
-- 💾 **内存优化**: 零拷贝架构和内存映射 I/O
-- 🔧 **硬件加速**: SIMD 指令集优化
-
-### ✅ 易用性
-- 📚 **完整文档**: 1500+ 行详细使用指南
-- 💡 **丰富示例**: 涵盖所有使用场景的示例代码
-- 🛠️ **便捷宏**: 简化常用配置的宏定义
-- 🔧 **编译脚本**: 提供完整的 Makefile 支持
-
-## 🚦 快速部署检查清单
-
-- [ ] 确保 `lib/krep_advanced.dll` 可访问
-- [ ] 包含 `include/krep_advanced.h` 头文件
-- [ ] 链接 `lib/libkrep_advanced.dll.a` 导入库
-- [ ] 测试基本功能 (运行 `examples/basic_search.exe`)
-- [ ] 根据需要调整线程数和 SIMD 设置
-
-## 🤝 支持与反馈
-
-这是一个完整实现的 krep Advanced Windows DLL，包含：
-
-- ✅ 100% 功能实现
-- ✅ 完整测试验证  
-- ✅ 详细使用文档
-- ✅ 丰富示例代码
-
-如需技术支持或有任何问题，请参考 `docs/USER_GUIDE.md` 中的详细说明。
+- **[docs/USER_GUIDE.md](docs/USER_GUIDE.md)** - Complete usage guide (1500+ lines)
+- **[docs/FINAL_TEST_REPORT.md](docs/FINAL_TEST_REPORT.md)** - Test report
+- **[examples/](examples/)** - Complete example programs
 
 ---
 
-🎯 **krep Advanced Windows DLL** - 高性能、功能完整、生产就绪的字符串搜索解决方案！
+## The Story Behind the Name
 
-**版本**: 1.0.0 | **构建日期**: 2024 | **状态**: 🚀 生产就绪
+The name "krep" has an interesting origin. It is inspired by the Icelandic word "kreppan," which means "to grasp quickly" or "to catch firmly." I came across this word while researching efficient techniques for pattern recognition.
+
+Just as skilled fishers identify patterns in the water to locate fish quickly, I designed "krep" to find patterns in text with maximum efficiency. The name is also short and easy to remember—perfect for a command-line utility that users might type hundreds of times per day.
+
+## Key Features
+
+- **Multiple search algorithms**: Boyer-Moore-Horspool, KMP, Aho-Corasick for optimal performance across different pattern types
+- **SIMD acceleration**: Uses SSE4.2, AVX2, or NEON instructions when available for blazing-fast searches
+- **Memory-mapped I/O**: Maximizes throughput when processing large files
+- **Multi-threaded search**: Automatically parallelizes searches across available CPU cores
+- **Regex support**: POSIX Extended Regular Expression searching
+- **Multiple pattern search**: Efficiently search for multiple patterns simultaneously
+- **Recursive directory search**: Skip binary files and common non-code directories
+- **Colored output**: Highlights matches for better readability
+- **Specialized algorithms**: Optimized handling for single-character and short patterns
+- **Match Limiting**: Stop searching a file after a specific number of matching lines are found.
+
+## Installation
+
+### Using Homebrew (macOS)
+
+If you are on macOS and have Homebrew installed, you can install `krep` easily:
+
+```bash
+brew install krep
+```
+
+### Building from Source
+
+```bash
+# Clone the repository
+git clone https://github.com/davidesantangelo/krep.git
+cd krep
+
+# Build and install
+make
+sudo make install
+
+# uninstall
+sudo make uninstall
+```
+
+The binary will be installed to `/usr/local/bin/krep` by default.
+
+### Requirements
+
+- GCC or compatible C compiler
+- POSIX-compliant system (Linux, macOS, BSD)
+- pthread support
+
+### Build Options
+
+Override default optimization settings in the Makefile:
+
+```bash
+# Disable architecture-specific optimizations
+make ENABLE_ARCH_DETECTION=0
+```
+
+## Usage
+
+```bash
+krep [OPTIONS] PATTERN [FILE | DIRECTORY]
+krep [OPTIONS] -e PATTERN [FILE | DIRECTORY]
+krep [OPTIONS] -f FILE [FILE | DIRECTORY]
+krep [OPTIONS] -s PATTERN STRING_TO_SEARCH
+krep [OPTIONS] PATTERN < FILE
+cat FILE | krep [OPTIONS] PATTERN
+```
+
+## Usage Examples
+
+Search for a fixed string in a file:
+```bash
+krep -F "value: 100%" config.ini
+```
+
+Search recursively:
+```bash
+krep -r "function" ./project
+```
+
+Whole word search (matches only complete words):
+```bash
+krep -w 'cat' samples/text.en
+```
+
+Use with piped input:
+```bash
+cat krep.c | krep 'c'
+```
+
+## Command Line Options
+
+- `-i, --ignore-case` Case-insensitive search
+- `-c, --count` Count matching lines only
+- `-o, --only-matching` Print only the matched parts of lines
+- `-e PATTERN, --pattern=PATTERN` Specify pattern(s). Can be used multiple times.
+- `-f FILE, --file=FILE` Read patterns from FILE, one per line.
+- `-m NUM, --max-count=NUM` Stop searching each file after finding NUM matching lines.
+- `-E, --extended-regexp` Use POSIX Extended Regular Expressions
+- `-F, --fixed-strings` Interpret pattern as fixed string(s) (default unless -E is used)
+- `-r, --recursive` Recursively search directories
+- `-t NUM, --threads=NUM` Use NUM threads for file search (default: auto)
+- `-s STRING, --string=STRING` Search in the provided STRING instead of file(s)
+- `-w, --word-regexp` Match only whole words
+- `--color[=WHEN]` Control color output ('always', 'never', 'auto')
+- `--no-simd` Explicitly disable SIMD acceleration
+- `-v, --version` Show version information
+- `-h, --help` Show help message
+
+## Performance Benchmarks
+
+Comparing performance on the same text file with identical search pattern:
+
+| Tool    | Time (seconds) | CPU Usage |
+|---------|---------------:|----------:|
+| krep    |         0.106  |     328%  |
+| grep    |         4.400  |      99%  |
+| ripgrep |         0.115  |      97%  |
+
+*Krep is approximately 41.5x faster than grep and slightly faster than ripgrep in this test. Benchmarks performed on Mac Mini M4 with 24GB RAM.*
+
+The benchmarks above were conducted using the subtitles2016-sample.en.gz dataset, which can be obtained with:
+```bash
+curl -LO 'https://burntsushi.net/stuff/subtitles2016-sample.en.gz'
+```
+
+## How Krep Works
+
+Krep achieves its high performance through several key techniques:
+
+### 1. Smart Algorithm Selection
+
+Krep automatically selects the optimal search algorithm based on the pattern and available hardware:
+
+- **Boyer-Moore-Horspool** for most literal string searches
+- **Knuth-Morris-Pratt (KMP)** for very short patterns and repetitive patterns
+- **memchr optimization** for single-character patterns
+- **SIMD Acceleration** (SSE4.2, AVX2, or NEON) for compatible hardware
+- **Regex Engine** for regular expression patterns
+- **Aho-Corasick** for efficient multiple pattern matching
+
+### 2. Multi-threading Architecture
+
+Krep utilizes parallel processing to dramatically speed up searches:
+
+- Automatically detects available CPU cores
+- Divides large files into chunks for parallel processing
+- Implements thread pooling for maximum efficiency
+- Optimized thread count selection based on file size
+- Careful boundary handling to ensure no matches are missed
+
+### 3. Memory-Mapped I/O
+
+Instead of traditional read operations:
+
+- Memory maps files for direct access by the CPU
+- Significantly reduces I/O overhead
+- Enables CPU cache optimization
+- Progressive prefetching for larger files
+
+### 4. Optimized Data Structures
+
+- Zero-copy architecture where possible
+- Efficient match position tracking
+- Lock-free aggregation of results
+
+### 5. Skipping Non-Relevant Content
+
+When using recursive search (`-r`), Krep automatically:
+- Skips common binary file types
+- Ignores version control directories (`.git`, `.svn`)
+- Bypasses dependency directories (`node_modules`, `venv`)
+- Detects binary content to avoid searching non-text files
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+## Author
+
+- **Davide Santangelo** - [GitHub](https://github.com/davidesantangelo)
+
+## License
+
+This project is licensed under the BSD-2 License - see the LICENSE file for details.
+
+Copyright © 2025 Davide Santangelo

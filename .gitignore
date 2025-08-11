@@ -7,6 +7,9 @@
 ehthumbs.db
 Thumbs.db
 
+# IDE files
+.vscode/settings.json
+
 # Compiled executables from examples
 examples/*.exe
 examples/*.o
@@ -18,4 +21,3 @@ examples/*.o
 
 # Log files
 *.log
-EOF < /dev/null
