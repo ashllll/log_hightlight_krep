@@ -1,0 +1,18 @@
+krep Advanced Windows DLL v1.2.1
+Built: 2025年 8月12日 星期二 01时43分51秒 CST
+Architecture: x86_64 (64-bit)
+
+Advanced DLL: 119K (Import lib: 10K)  
+Simple DLL: 99K (Import lib: 4.7K)
+
+Built with MinGW-w64 cross-compiler
+Optimization: -O3 -flto -msse4.2
+Based on krep by Davide Santangelo
+
+Features implemented:
+✅ Smart Algorithm Selection (智能算法选择)
+✅ Multi-threading Architecture (多线程架构)  
+✅ Memory-Mapped I/O (内存映射I/O)
+✅ File Type Detection (文件类型检测)
+✅ SIMD Acceleration (SIMD加速)
+✅ All krep Command-line Options (所有命令行选项)
