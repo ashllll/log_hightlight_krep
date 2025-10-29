@@ -93,6 +93,7 @@ static bool color_output_enabled KREP_UNUSED = false;
 static bool only_matching = false; // -o flag
 static bool force_no_simd = false;
 static atomic_bool global_match_found_flag = false; // Used in recursive search
+static atomic_bool madvise_warning_emitted = false;   // Suppress repeated madvise warnings
 
 // Global lookup table for fast lowercasing
 unsigned char lower_table[256]; // Remove static
@@ -298,6 +299,37 @@ bool match_result_merge(match_result_t *dest, const match_result_t *src, size_t 
     return true;
 }
 
+// Merge results applying a hard cap on the number of elements copied from src
+static bool match_result_merge_limited(match_result_t *dest,
+                                       const match_result_t *src,
+                                       size_t chunk_offset,
+                                       uint64_t limit)
+{
+    if (!dest || !src || src->count == 0 || limit == 0)
+        return true;
+
+    uint64_t copy_count = src->count;
+    if (limit < copy_count)
+        copy_count = limit;
+
+    if (copy_count == src->count)
+    {
+        return match_result_merge(dest, src, chunk_offset);
+    }
+
+    for (uint64_t i = 0; i < copy_count; ++i)
+    {
+        if (!match_result_add(dest,
+                              src->positions[i].start_offset + chunk_offset,
+                              src->positions[i].end_offset + chunk_offset))
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 // --- Line Finding Functions ---
 
 // Find the start of the line containing the given position
@@ -417,7 +449,12 @@ size_t print_matching_items(const char *filename, const char *text, size_t text_
 // Use a larger stdout buffer than default to reduce syscalls
 #define STDOUT_BUFFER_SIZE (8 * 1024 * 1024) // 8MB stdout buffer
     static char stdout_buf[STDOUT_BUFFER_SIZE];
-    setvbuf(stdout, stdout_buf, _IOFBF, STDOUT_BUFFER_SIZE);
+    static bool stdout_buffer_initialized = false;
+    if (!stdout_buffer_initialized)
+    {
+        setvbuf(stdout, stdout_buf, _IOFBF, STDOUT_BUFFER_SIZE);
+        stdout_buffer_initialized = true;
+    }
 
 // --- Preallocate reusable line buffer for formatting ---
 #define LINE_BUFFER_INITIAL_SIZE (512 * 1024) // Start with 512KB
@@ -1798,7 +1835,12 @@ void *search_chunk_thread(void *arg)
     // Select and run the search algorithm on the assigned chunk
     // Pass local_result (can be NULL if not tracking positions)
     // For multiple patterns, select_search_algorithm should return aho_corasick_search
-    search_func_t search_algo = select_search_algorithm(data->params);
+    search_func_t search_algo = data->search_algo;
+    if (!search_algo)
+    {
+        search_algo = select_search_algorithm(data->params);
+        data->search_algo = search_algo;
+    }
 
     count_result = search_algo(data->params,
                                data->chunk_start,
@@ -2467,6 +2509,11 @@ int search_file(const search_params_t *params, const char *filename, int request
         }
     }
 
+#if defined(POSIX_FADV_SEQUENTIAL) && !defined(__APPLE__)
+    // Hint the kernel about sequential access to encourage readahead
+    (void)posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL);
+#endif
+
     // --- Memory Map File ---
     // FIX: Use conditional compilation for MAP_POPULATE
     int mmap_base_flags = MAP_PRIVATE;
@@ -2507,9 +2554,15 @@ int search_file(const search_params_t *params, const char *filename, int request
     }
 
     // Advise the kernel about expected access pattern
-    if (madvise(file_data, file_size, MADV_SEQUENTIAL | MADV_WILLNEED) != 0)
+    int madvise_ret = madvise(file_data, file_size, MADV_SEQUENTIAL | MADV_WILLNEED);
+    if (madvise_ret != 0)
     {
-        fprintf(stderr, "krep: %s: Warning: madvise failed: %s\n", filename, strerror(errno));
+        int madvise_err = errno;
+        if (!atomic_exchange(&madvise_warning_emitted, true))
+        {
+            fprintf(stderr, "krep: %s: Warning: madvise failed: %s (future warnings suppressed)\n",
+                    filename, strerror(madvise_err));
+        }
         // Continue execution since this is just an optimization
     }
 
@@ -2612,6 +2665,9 @@ int search_file(const search_params_t *params, const char *filename, int request
     // Initialize the global thread pool if needed
     init_global_thread_pool(optimal_threads);
 
+    // Preselect search algorithm once to avoid redundant decisions inside each worker
+    search_func_t preselected_algo = select_search_algorithm(&current_params);
+
     for (int i = 0; i < actual_thread_count; ++i)
     {
         if (current_pos >= file_size)
@@ -2623,6 +2679,7 @@ int search_file(const search_params_t *params, const char *filename, int request
         thread_args[i].thread_id = i;
         thread_args[i].params = &current_params; // Pass params containing the pre-built trie
         thread_args[i].chunk_start = file_data + current_pos;
+        thread_args[i].search_algo = preselected_algo;
 
         size_t this_chunk_len = (current_pos + chunk_size_calc > file_size) ? (file_size - current_pos) : chunk_size_calc;
 
@@ -2720,34 +2777,33 @@ int search_file(const search_params_t *params, const char *filename, int request
             // Merge position results if tracking, respecting max_count
             if (current_params.track_positions && global_matches && thread_args[i].local_result)
             {
-                if (max_count == SIZE_MAX || global_matches->count < max_count)
+                bool merge_ok = true;
+                if (max_count == SIZE_MAX)
                 {
-                    uint64_t remaining_limit = (max_count == SIZE_MAX) ? SIZE_MAX : max_count - global_matches->count;
-                    uint64_t merge_count = 0;
-                    for (uint64_t j = 0; j < thread_args[i].local_result->count && merge_count < remaining_limit; ++j)
-                    {
-                        // Adjust offsets based on the original chunk start (relative to file_data)
-                        size_t chunk_offset = thread_args[i].chunk_start - file_data;
-                        if (match_result_add(global_matches,
-                                             thread_args[i].local_result->positions[j].start_offset + chunk_offset,
-                                             thread_args[i].local_result->positions[j].end_offset + chunk_offset))
-                        {
-                            merge_count++;
-                        }
-                        else
-                        {
-                            fprintf(stderr, "krep: %s: Failed to merge match result from thread %d.\n", filename, i);
-                            merge_error = true;
-                            break; // Stop merging for this thread on error
-                        }
-                    }
+                    size_t chunk_offset = (size_t)(thread_args[i].chunk_start - file_data);
+                    merge_ok = match_result_merge(global_matches, thread_args[i].local_result, chunk_offset);
                 }
-                match_result_free(thread_args[i].local_result); // Free local result after merging
+                else if (global_matches->count < max_count)
+                {
+                    size_t chunk_offset = (size_t)(thread_args[i].chunk_start - file_data);
+                    uint64_t remaining_limit = max_count - global_matches->count;
+                    merge_ok = match_result_merge_limited(global_matches,
+                                                          thread_args[i].local_result,
+                                                          chunk_offset,
+                                                          remaining_limit);
+                }
+
+                if (!merge_ok)
+                {
+                    fprintf(stderr, "krep: %s: Failed to merge match result from thread %d.\n", filename, i);
+                    merge_error = true;
+                }
+
+                match_result_free(thread_args[i].local_result); // Free local result after merging/skip
                 thread_args[i].local_result = NULL;
             }
             else if (thread_args[i].local_result)
             {
-                // Free local result if not merged (e.g., limit reached or not tracking)
                 match_result_free(thread_args[i].local_result);
                 thread_args[i].local_result = NULL;
             }
@@ -2774,8 +2830,10 @@ int search_file(const search_params_t *params, const char *filename, int request
         }
         else if (result_code == 0 && global_matches)
         {
-            // Sort matches by start offset before printing if needed (optional, but good practice)
-            qsort(global_matches->positions, global_matches->count, sizeof(match_position_t), compare_match_positions);
+            if (global_matches->count > 1)
+            {
+                qsort(global_matches->positions, global_matches->count, sizeof(match_position_t), compare_match_positions);
+            }
 
             // Print matching lines/parts, respecting max_count via print_matching_items
             print_matching_items(filename, file_data, file_size, global_matches, &current_params); // Pass params
