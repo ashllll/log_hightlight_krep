@@ -68,7 +68,7 @@ static bool ensure_line_buffer_capacity(char **buffer_ptr, size_t *capacity_ptr,
 #define MIN_CHUNK_SIZE (4 * 1024 * 1024)
 #define SINGLE_THREAD_FILE_SIZE_THRESHOLD MIN_CHUNK_SIZE
 #define ADAPTIVE_THREAD_FILE_SIZE_THRESHOLD 0
-#define VERSION "1.2"
+#define VERSION "1.3"
 #ifndef PATH_MAX
 #define PATH_MAX 4096
 #endif
