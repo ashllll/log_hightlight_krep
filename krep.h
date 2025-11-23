@@ -86,6 +86,13 @@ typedef struct search_params
 
 } search_params_t;
 
+/* --- Function Pointer Type for Search Algorithms --- */
+// Returns count (lines or matches depending on mode). result can be NULL unless track_positions is true.
+typedef uint64_t (*search_func_t)(const search_params_t *params,
+                                  const char *text_start,
+                                  size_t text_len,
+                                  match_result_t *result);
+
 // Data passed to each search thread
 typedef struct
 {
@@ -93,6 +100,7 @@ typedef struct
    const search_params_t *params; // Pointer to shared search parameters
    const char *chunk_start;       // Pointer to the start of the memory chunk for this thread
    size_t chunk_len;              // Length of the chunk to process (may include overlap)
+   search_func_t search_algo;     // Pre-selected search algorithm for this chunk
 
    // Thread-specific results
    match_result_t *local_result; // For position tracking (default/-o)
@@ -128,14 +136,6 @@ thread_pool_t *thread_pool_init(int num_threads);
 bool thread_pool_submit(thread_pool_t *pool, void *(*func)(void *), void *arg);
 void thread_pool_wait_all(thread_pool_t *pool);
 void thread_pool_destroy(thread_pool_t *pool);
-
-/* --- Function Pointer Type for Search Algorithms --- */
-// Updated signature: Returns count (lines or matches depending on mode).
-// Takes match_result_t only if track_positions is true.
-typedef uint64_t (*search_func_t)(const search_params_t *params,
-                                  const char *text_start,
-                                  size_t text_len,
-                                  match_result_t *result); // For position tracking (can be NULL)
 
 /* --- Public API --- */
 
